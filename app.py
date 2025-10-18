@@ -10,6 +10,11 @@ from PIL import Image
 from io import BytesIO
 from gen_ai_hub.proxy.native.google_vertexai.clients import GenerativeModel
 from gen_ai_hub.proxy.core.proxy_clients import get_proxy_client
+from reportlab.lib.pagesizes import letter
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
+from reportlab.lib.units import inch
+import html
 
 # Load environment variables
 load_dotenv()
@@ -106,6 +111,11 @@ def upload_file():
             print(f"Error deleting file {filename}: {e}")
     
     sessions[session_id]['files'] = []
+    
+    # IMPORTANT: Reset ticket button state when new file is uploaded
+    sessions[session_id]['ticket_button_clicked'] = False
+    sessions[session_id]['ticket_created'] = False
+    
     uploaded_files = []
     files = request.files.getlist('files')
     
@@ -165,9 +175,11 @@ def upload_file():
     
     return jsonify({
         'success': True,
-        'files': uploaded_files
+        'files': uploaded_files,
+        'ticket_button_clicked': sessions[session_id]['ticket_button_clicked'],
+        'ticket_created': sessions[session_id]['ticket_created']
     })
-
+# Modify the /chat endpoint - replace the hazard detection section:
 @app.route('/chat', methods=['POST'])
 def chat():
     data = request.json
@@ -206,6 +218,9 @@ def chat():
             if message:
                 user_parts.append({"text": message})
             
+            # Track if current files are images
+            has_image_file = False
+            
             # Add uploaded files (images or audio) in the correct format
             for file_info in sessions[session_id]['files']:
                 filename = file_info['filename'] if isinstance(file_info, dict) else file_info
@@ -214,6 +229,7 @@ def chat():
                 if os.path.exists(filepath):
                     # Check if it's an image file
                     if filename.lower().endswith(('.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp')):
+                        has_image_file = True
                         with open(filepath, 'rb') as image_file:
                             image_data = image_file.read()
                             encoded_image = base64.b64encode(image_data).decode('utf-8')
@@ -281,8 +297,12 @@ def chat():
                 'concern', 'issue', 'problem', 'warning', 'alert'
             ]
             
-            # Only show ticket button if not already clicked
-            show_ticket_button = (not sessions[session_id]['ticket_button_clicked']) and any(keyword in bot_response.lower() for keyword in hazard_keywords)
+            # Show ticket button if: has image file AND not already clicked AND response contains hazard keywords
+            show_ticket_button = (
+                has_image_file and 
+                (not sessions[session_id]['ticket_button_clicked']) and 
+                any(keyword in bot_response.lower() for keyword in hazard_keywords)
+            )
             
             # Add bot message to session
             sessions[session_id]['messages'].append({
@@ -316,6 +336,87 @@ def chat():
             'response': 'An error occurred while processing your request.'
         })
 
+# Add new PDF export endpoint
+@app.route('/export/pdf', methods=['POST'])
+def export_pdf():
+    data = request.json
+    session_id = data.get('session_id')
+    
+    if session_id not in sessions or not sessions[session_id]['messages']:
+        return jsonify({'error': 'No chat history found'}), 404
+    
+    try:
+        # Create PDF filename
+        pdf_filename = f'chat_export_{session_id}_{int(time.time())}.pdf'
+        pdf_path = os.path.join(STATIC_FOLDER, pdf_filename)
+        
+        # Create PDF document
+        doc = SimpleDocTemplate(pdf_path, pagesize=letter)
+        styles = getSampleStyleSheet()
+        
+        # Custom styles
+        title_style = ParagraphStyle(
+            'CustomTitle',
+            parent=styles['Heading1'],
+            fontSize=16,
+            textColor='#2c3e50',
+            spaceAfter=30
+        )
+        
+        user_style = ParagraphStyle(
+            'UserMessage',
+            parent=styles['Normal'],
+            fontSize=11,
+            textColor='#2980b9',
+            leftIndent=20,
+            spaceAfter=10,
+            fontName='Helvetica-Bold'
+        )
+        
+        bot_style = ParagraphStyle(
+            'BotMessage',
+            parent=styles['Normal'],
+            fontSize=10,
+            textColor='#34495e',
+            leftIndent=20,
+            spaceAfter=15
+        )
+        
+        # Build PDF content
+        story = []
+        
+        # Title
+        story.append(Paragraph("Image/Audio Assistant - Chat Export", title_style))
+        story.append(Spacer(1, 0.2 * inch))
+        
+        # Add messages
+        for msg in sessions[session_id]['messages']:
+            if msg['role'] == 'user':
+                story.append(Paragraph(f"<b>You:</b> {html.escape(msg['content'])}", user_style))
+            else:
+                # Clean bot response for PDF
+                content = msg['content'].replace('**', '')
+                story.append(Paragraph(f"<b>Assistant:</b> {html.escape(content)}", bot_style))
+        
+        # Build PDF
+        doc.build(story)
+        
+        # Read PDF file
+        with open(pdf_path, 'rb') as f:
+            pdf_data = base64.b64encode(f.read()).decode('utf-8')
+        
+        # Clean up
+        os.remove(pdf_path)
+        
+        return jsonify({
+            'success': True,
+            'pdf_data': pdf_data,
+            'filename': pdf_filename
+        })
+    
+    except Exception as e:
+        print(f"PDF export error: {e}")
+        return jsonify({'error': str(e)}), 500
 @app.route('/api/create-ticket', methods=['POST'])
 def create_ticket():
     data = request.json
