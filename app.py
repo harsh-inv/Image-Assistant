@@ -54,6 +54,76 @@ model = load_model()
 # Session storage
 sessions = {}
 
+def get_system_prompt(file_type):
+    """Generate system prompt based on file type"""
+    
+    base_prompt = """You are a professional Image/Audio Analysis Assistant for quality inspection and safety assessment.
+
+CRITICAL CONVERSATION RULES:
+1. When user acknowledges (says "ok", "nice", "thanks", "good", "no", "yes" etc.) - Give a SINGLE SHORT sentence response
+2. NEVER repeat previous analysis unless explicitly asked with words like "again", "repeat", "show me"  
+3. If user says "no" after you asked if they want more info - Respond: "Understood. Let me know if you need anything else."
+4. Only provide detailed analysis for NEW questions or when user uploads NEW files
+5. For follow-up questions, answer concisely based on previous analysis
+
+RESPONSE LENGTH:
+- Acknowledgments: 1 sentence maximum
+- Follow-up questions: 2-3 sentences
+- New analysis requests: Full structured response"""
+
+    if file_type == 'image':
+        return base_prompt + """
+
+IMAGE ANALYSIS STRUCTURE (only for NEW analysis requests):
+
+1. **Overall Impression:** Brief summary
+
+2. **Key Observations:** 
+   - Notable features (3-5 bullet points)
+
+3. **Quality Assessment:** 
+   - Defects, damage, irregularities
+   - **Highlight: hazards, risks, dangers** using these exact words
+   - Material condition
+
+4. **Potential Hazards:** (if any)
+   - Safety concerns with severity
+   - Fire, electrical, structural issues
+   
+5. **Recommendations:** Actions needed
+
+Critical terms to use when applicable: hazard, risk, danger, damaged, broken, defect, unsafe, malfunction, failure.
+"""
+    elif file_type == 'audio':
+        return base_prompt + """
+
+AUDIO ANALYSIS STRUCTURE (only for NEW analysis requests):
+
+1. **Overall Impression:** Brief description
+
+2. **Key Observations:**
+   - Content type and quality
+   - Notable characteristics
+
+3. **Sentiment/Tone:** (for speech)
+   - Emotional tone
+   - Speaker characteristics
+
+4. **Technical Quality:**
+   - Audio clarity
+   - Background noise
+   - Issues or distortions
+
+5. **Key Insights:** Main takeaways
+"""
+    else:
+        return base_prompt + """
+
+GENERAL ANALYSIS:
+Provide structured analysis only when explicitly requested.
+For acknowledgments, respond with 1 sentence maximum.
+"""
+
 @app.route('/')
 def index():
     return render_template('index.html')
@@ -72,7 +142,9 @@ def init_session():
             'ticket_created': False,
             'last_interaction': time.time(),
             'feedback_submitted': False,
-            'ticket_button_clicked': False
+            'ticket_button_clicked': False,
+            'last_analysis': None,
+            'awaiting_followup': False
         }
     
     return jsonify({
@@ -97,7 +169,9 @@ def upload_file():
             'ticket_created': False,
             'last_interaction': time.time(),
             'feedback_submitted': False,
-            'ticket_button_clicked': False
+            'ticket_button_clicked': False,
+            'last_analysis': None,
+            'awaiting_followup': False
         }
     
     # Clear existing files (only one file at a time)
@@ -115,6 +189,8 @@ def upload_file():
     # IMPORTANT: Reset ticket button state when new file is uploaded
     sessions[session_id]['ticket_button_clicked'] = False
     sessions[session_id]['ticket_created'] = False
+    sessions[session_id]['last_analysis'] = None
+    sessions[session_id]['awaiting_followup'] = False
     
     uploaded_files = []
     files = request.files.getlist('files')
@@ -179,7 +255,7 @@ def upload_file():
         'ticket_button_clicked': sessions[session_id]['ticket_button_clicked'],
         'ticket_created': sessions[session_id]['ticket_created']
     })
-# Modify the /chat endpoint - replace the hazard detection section:
+
 @app.route('/chat', methods=['POST'])
 def chat():
     data = request.json
@@ -196,7 +272,9 @@ def chat():
             'ticket_created': False,
             'last_interaction': time.time(),
             'feedback_submitted': False,
-            'ticket_button_clicked': False
+            'ticket_button_clicked': False,
+            'last_analysis': None,
+            'awaiting_followup': False
         }
     
     # Update last interaction time
@@ -214,73 +292,136 @@ def chat():
         if model:
             user_parts = []
             
-            # Add text message
-            if message:
-                user_parts.append({"text": message})
-            
-            # Track if current files are images
+            # Determine file type from uploaded files
+            file_type = None
             has_image_file = False
             
-            # Add uploaded files (images or audio) in the correct format
             for file_info in sessions[session_id]['files']:
                 filename = file_info['filename'] if isinstance(file_info, dict) else file_info
-                filepath = os.path.join(UPLOAD_FOLDER, filename)
+                if filename.lower().endswith(('.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp')):
+                    file_type = 'image'
+                    has_image_file = True
+                    break
+                elif filename.lower().endswith(('.wav', '.mp3', '.aiff', '.aac', '.ogg', '.flac')):
+                    file_type = 'audio'
+                    break
+            
+            # Get system prompt based on file type
+            system_prompt = get_system_prompt(file_type)
+            
+            # Check if this is an acknowledgment or negative response that doesn't need analysis
+            acknowledgments = [
+                'ok', 'okay', 'okey', 'oke', 'k',
+                'nice', 'good', 'great', 'excellent', 'awesome', 'perfect', 'cool', 'fine',
+                'thanks', 'thank you', 'thankyou', 'thx', 'ty',
+                'alright', 'got it', 'understood', 'i see', 'i understand',
+                'no', 'nope', 'nah', 'not really', 'no thanks', 'im good', "i'm good",
+                'yes', 'yeah', 'yep', 'yup', 'sure', 'of course'
+            ]
+            
+            # Normalize the message for checking
+            normalized_message = message.lower().strip().replace("'", "").replace(",", "").replace(".", "")
+            
+            # Check if message is ONLY an acknowledgment (not a question or request)
+            is_acknowledgment = (
+                normalized_message in acknowledgments or
+                (len(normalized_message.split()) <= 3 and any(ack in normalized_message for ack in acknowledgments))
+            ) and not any(question_word in normalized_message for question_word in [
+                'what', 'why', 'how', 'when', 'where', 'who', 'which', 'can', 'could', 'would', 'should', 'is', 'are', 'does', 'do', 'analyze', 'explain', 'tell', 'show', 'describe'
+            ])
+            
+            # Build the context
+            if is_acknowledgment and sessions[session_id]['last_analysis']:
+                # For acknowledgments, give a brief response without re-analyzing
+                context_message = f"""{system_prompt}
+
+The user previously received a detailed analysis. User just responded with: "{message}"
+
+This is just an acknowledgment, NOT a request for new analysis.
+
+Respond VERY BRIEFLY with ONE of these options:
+- If they said "ok/nice/good/thanks": "You're welcome! Feel free to ask if you need anything else or upload a new file for analysis."
+- If they said "no" after being asked if they want more details: "Understood. Feel free to upload a new file when you're ready, or let me know if you need anything else."
+- If they said "yes": "What specific aspect would you like me to elaborate on?"
+
+Do NOT repeat the analysis. Keep response to 1-2 sentences maximum."""
+                user_parts.append({"text": context_message})
                 
-                if os.path.exists(filepath):
-                    # Check if it's an image file
-                    if filename.lower().endswith(('.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp')):
-                        has_image_file = True
-                        with open(filepath, 'rb') as image_file:
-                            image_data = image_file.read()
-                            encoded_image = base64.b64encode(image_data).decode('utf-8')
-                        
-                        # Determine image MIME type
-                        if filename.lower().endswith('.png'):
-                            mime_type = 'image/png'
-                        elif filename.lower().endswith(('.jpg', '.jpeg')):
-                            mime_type = 'image/jpeg'
-                        elif filename.lower().endswith('.gif'):
-                            mime_type = 'image/gif'
-                        elif filename.lower().endswith('.bmp'):
-                            mime_type = 'image/bmp'
-                        elif filename.lower().endswith('.webp'):
-                            mime_type = 'image/webp'
-                        
-                        # Add image (goes first)
-                        user_parts.insert(0, {
-                            "inline_data": {
-                                "mime_type": mime_type,
-                                "data": encoded_image
-                            }
-                        })
+                # Don't add files for acknowledgment responses to save processing
+            else:
+                # For actual questions, include system prompt and conversation context
+                context_message = system_prompt
+                
+                # Add recent conversation history for context (last 2 exchanges)
+                recent_messages = sessions[session_id]['messages'][-4:] if len(sessions[session_id]['messages']) > 4 else sessions[session_id]['messages']
+                if len(recent_messages) > 1:  # If there's conversation history
+                    context_message += "\n\nRECENT CONVERSATION CONTEXT:\n"
+                    for msg in recent_messages[:-1]:  # Exclude current message
+                        role = "User" if msg['role'] == 'user' else "Assistant"
+                        context_message += f"{role}: {msg['content'][:200]}...\n"
+                
+                context_message += f"\n\nCurrent user message: {message}"
+                user_parts.append({"text": context_message})
+                
+                # Add uploaded files (images or audio) in the correct format
+                for file_info in sessions[session_id]['files']:
+                    filename = file_info['filename'] if isinstance(file_info, dict) else file_info
+                    filepath = os.path.join(UPLOAD_FOLDER, filename)
                     
-                    # Check if it's an audio file
-                    elif filename.lower().endswith(('.wav', '.mp3', '.aiff', '.aac', '.ogg', '.flac')):
-                        with open(filepath, 'rb') as audio_file:
-                            audio_data = audio_file.read()
-                            encoded_audio = base64.b64encode(audio_data).decode('utf-8')
+                    if os.path.exists(filepath):
+                        # Check if it's an image file
+                        if filename.lower().endswith(('.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp')):
+                            with open(filepath, 'rb') as image_file:
+                                image_data = image_file.read()
+                                encoded_image = base64.b64encode(image_data).decode('utf-8')
+                            
+                            # Determine image MIME type
+                            if filename.lower().endswith('.png'):
+                                mime_type = 'image/png'
+                            elif filename.lower().endswith(('.jpg', '.jpeg')):
+                                mime_type = 'image/jpeg'
+                            elif filename.lower().endswith('.gif'):
+                                mime_type = 'image/gif'
+                            elif filename.lower().endswith('.bmp'):
+                                mime_type = 'image/bmp'
+                            elif filename.lower().endswith('.webp'):
+                                mime_type = 'image/webp'
+                            
+                            # Add image
+                            user_parts.append({
+                                "inline_data": {
+                                    "mime_type": mime_type,
+                                    "data": encoded_image
+                                }
+                            })
                         
-                        # Determine audio MIME type
-                        if filename.lower().endswith('.wav'):
-                            mime_type = 'audio/wav'
-                        elif filename.lower().endswith('.mp3'):
-                            mime_type = 'audio/mp3'
-                        elif filename.lower().endswith('.aiff'):
-                            mime_type = 'audio/aiff'
-                        elif filename.lower().endswith('.aac'):
-                            mime_type = 'audio/aac'
-                        elif filename.lower().endswith('.ogg'):
-                            mime_type = 'audio/ogg'
-                        elif filename.lower().endswith('.flac'):
-                            mime_type = 'audio/flac'
-                        
-                        # Add audio (goes first)
-                        user_parts.insert(0, {
-                            "inline_data": {
-                                "mime_type": mime_type,
-                                "data": encoded_audio
-                            }
-                        })
+                        # Check if it's an audio file
+                        elif filename.lower().endswith(('.wav', '.mp3', '.aiff', '.aac', '.ogg', '.flac')):
+                            with open(filepath, 'rb') as audio_file:
+                                audio_data = audio_file.read()
+                                encoded_audio = base64.b64encode(audio_data).decode('utf-8')
+                            
+                            # Determine audio MIME type
+                            if filename.lower().endswith('.wav'):
+                                mime_type = 'audio/wav'
+                            elif filename.lower().endswith('.mp3'):
+                                mime_type = 'audio/mp3'
+                            elif filename.lower().endswith('.aiff'):
+                                mime_type = 'audio/aiff'
+                            elif filename.lower().endswith('.aac'):
+                                mime_type = 'audio/aac'
+                            elif filename.lower().endswith('.ogg'):
+                                mime_type = 'audio/ogg'
+                            elif filename.lower().endswith('.flac'):
+                                mime_type = 'audio/flac'
+                            
+                            # Add audio
+                            user_parts.append({
+                                "inline_data": {
+                                    "mime_type": mime_type,
+                                    "data": encoded_audio
+                                }
+                            })
             
             # Generate content with properly formatted parts
             response = model.generate_content([
@@ -288,6 +429,13 @@ def chat():
             ])
             
             bot_response = response.text
+            
+            # Store this as last analysis if it's not an acknowledgment response
+            if not is_acknowledgment:
+                sessions[session_id]['last_analysis'] = bot_response
+                sessions[session_id]['awaiting_followup'] = True
+            else:
+                sessions[session_id]['awaiting_followup'] = False
             
             # Check if response contains hazard/risk/broken keywords
             hazard_keywords = [
@@ -301,7 +449,8 @@ def chat():
             show_ticket_button = (
                 has_image_file and 
                 (not sessions[session_id]['ticket_button_clicked']) and 
-                any(keyword in bot_response.lower() for keyword in hazard_keywords)
+                any(keyword in bot_response.lower() for keyword in hazard_keywords) and
+                not is_acknowledgment
             )
             
             # Add bot message to session
@@ -336,7 +485,67 @@ def chat():
             'response': 'An error occurred while processing your request.'
         })
 
-# Add new PDF export endpoint
+@app.route('/api/create-ticket', methods=['POST'])
+def create_ticket():
+    data = request.json
+    session_id = data.get('session_id')
+    
+    if session_id not in sessions:
+        sessions[session_id] = {
+            'messages': [],
+            'files': [],
+            'ticket_counter': 0,
+            'feedback': [],
+            'ticket_created': False,
+            'last_interaction': time.time(),
+            'feedback_submitted': False,
+            'ticket_button_clicked': False,
+            'last_analysis': None,
+            'awaiting_followup': False
+        }
+    
+    # Mark ticket as created and button as clicked for this session
+    sessions[session_id]['ticket_created'] = True
+    sessions[session_id]['ticket_button_clicked'] = True
+    
+    # Increment ticket counter
+    sessions[session_id]['ticket_counter'] += 1
+    ticket_number = f"Q{sessions[session_id]['ticket_counter']:03d}"
+    
+    # Create ticket data
+    ticket_data = {
+        'ticket_number': ticket_number,
+        'timestamp': datetime.now().isoformat(),
+        'session_id': session_id,
+        'type': 'quality_inspection'
+    }
+    
+    # Update last interaction time
+    sessions[session_id]['last_interaction'] = time.time()
+    
+    return jsonify({
+        'success': True,
+        'ticket_number': ticket_number,
+        'message': f'Quality Inspection Ticket {ticket_number} created successfully!',
+        'ticket_created': True,
+        'ticket_button_clicked': True
+    })
+
+@app.route('/export/json', methods=['POST'])
+def export_json():
+    data = request.json
+    session_id = data.get('session_id')
+    
+    if session_id in sessions:
+        return jsonify({
+            'session_id': session_id,
+            'messages': sessions[session_id]['messages'],
+            'files': [f['filename'] if isinstance(f, dict) else f for f in sessions[session_id]['files']],
+            'ticket_counter': sessions[session_id]['ticket_counter']
+        })
+    else:
+        return jsonify({'error': 'Session not found'})
+
 @app.route('/export/pdf', methods=['POST'])
 def export_pdf():
     data = request.json
@@ -417,64 +626,6 @@ def export_pdf():
     except Exception as e:
         print(f"PDF export error: {e}")
         return jsonify({'error': str(e)}), 500
-@app.route('/api/create-ticket', methods=['POST'])
-def create_ticket():
-    data = request.json
-    session_id = data.get('session_id')
-    
-    if session_id not in sessions:
-        sessions[session_id] = {
-            'messages': [],
-            'files': [],
-            'ticket_counter': 0,
-            'feedback': [],
-            'ticket_created': False,
-            'last_interaction': time.time(),
-            'feedback_submitted': False,
-            'ticket_button_clicked': False
-        }
-    
-    # Mark ticket as created and button as clicked for this session
-    sessions[session_id]['ticket_created'] = True
-    sessions[session_id]['ticket_button_clicked'] = True
-    
-    # Increment ticket counter
-    sessions[session_id]['ticket_counter'] += 1
-    ticket_number = f"Q{sessions[session_id]['ticket_counter']:03d}"
-    
-    # Create ticket data
-    ticket_data = {
-        'ticket_number': ticket_number,
-        'timestamp': datetime.now().isoformat(),
-        'session_id': session_id,
-        'type': 'quality_inspection'
-    }
-    
-    # Update last interaction time
-    sessions[session_id]['last_interaction'] = time.time()
-    
-    return jsonify({
-        'success': True,
-        'ticket_number': ticket_number,
-        'message': f'Quality Inspection Ticket {ticket_number} created successfully!',
-        'ticket_created': True,
-        'ticket_button_clicked': True
-    })
-
-@app.route('/export/json', methods=['POST'])
-def export_json():
-    data = request.json
-    session_id = data.get('session_id')
-    
-    if session_id in sessions:
-        return jsonify({
-            'session_id': session_id,
-            'messages': sessions[session_id]['messages'],
-            'files': [f['filename'] if isinstance(f, dict) else f for f in sessions[session_id]['files']],
-            'ticket_counter': sessions[session_id]['ticket_counter']
-        })
-    else:
-        return jsonify({'error': 'Session not found'})
 
 @app.route('/clear', methods=['POST'])
 def clear_chat():
@@ -498,6 +649,8 @@ def clear_chat():
         sessions[session_id]['ticket_created'] = False
         sessions[session_id]['ticket_button_clicked'] = False
         sessions[session_id]['last_interaction'] = time.time()
+        sessions[session_id]['last_analysis'] = None
+        sessions[session_id]['awaiting_followup'] = False
         
         return jsonify({'success': True})
 
@@ -517,7 +670,9 @@ def submit_feedback():
             'ticket_created': False,
             'last_interaction': time.time(),
             'feedback_submitted': False,
-            'ticket_button_clicked': False
+            'ticket_button_clicked': False,
+            'last_analysis': None,
+            'awaiting_followup': False
         }
     
     feedback_entry = {
@@ -545,8 +700,8 @@ def check_idle():
         last_interaction = sessions[session_id]['last_interaction']
         idle_time = current_time - last_interaction
         
-        # Check if 30 seconds have passed
-        if idle_time >= 30:
+        # Check if 10 seconds have passed
+        if idle_time >= 10:
             return jsonify({
                 'is_idle': True,
                 'idle_time': idle_time
