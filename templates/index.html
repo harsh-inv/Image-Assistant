@@ -1023,1181 +1023,1175 @@
         </div>
     </div>
 
-    <script>
-        let sessionId = `session_${Date.now()}`;
-        let isRecording = false;
-        let recognition = null;
-        let currentUtterance = null;
-        let currentSpeakingButton = null;
-        let isSpeaking = false;
-        let uploadedFiles = [];
-        let inactivityTimer = null;
-        let userHasFeedback = false;
-        let ticketCreated = false;
-        let waitingForMoreQuestionsResponse = false;
-        let waitingForUploadResponse = false;
-        let currentFileType = null; // Track whether current file is image or audio
-        let sessionEnded = false;
-        
-        // Initialize speech recognition
-        if ('webkitSpeechRecognition' in window) {
-            recognition = new webkitSpeechRecognition();
-            recognition.continuous = false;
-            recognition.interimResults = false;
-            recognition.lang = 'en-US';
+<script>
+    let sessionId = `session_${Date.now()}`;
+    let isRecording = false;
+    let recognition = null;
+    let currentUtterance = null;
+    let currentSpeakingButton = null;
+    let isSpeaking = false;
+    let uploadedFiles = [];
+    let inactivityTimer = null;
+    let userHasFeedback = false;
+    let ticketCreated = false;
+    let waitingForMoreQuestionsResponse = false;
+    let waitingForUploadResponse = false;
+    let currentFileType = null;
+    let sessionEnded = false;
+    let awaitingFileUpload = false; // NEW: Block timer until file is uploaded
+    
+    // Initialize speech recognition
+    if ('webkitSpeechRecognition' in window) {
+        recognition = new webkitSpeechRecognition();
+        recognition.continuous = false;
+        recognition.interimResults = false;
+        recognition.lang = 'en-US';
 
-            recognition.onresult = function(event) {
-                const transcript = event.results[0][0].transcript;
-                document.getElementById('messageInput').value = transcript;
-                sendMessage(true);
-            };
+        recognition.onresult = function(event) {
+            const transcript = event.results[0][0].transcript;
+            document.getElementById('messageInput').value = transcript;
+            sendMessage(true);
+        };
 
-            recognition.onerror = function(event) {
-                console.error('Speech recognition error:', event.error);
-                stopRecording();
-            };
+        recognition.onerror = function(event) {
+            console.error('Speech recognition error:', event.error);
+            stopRecording();
+        };
 
-            recognition.onend = function() {
-                stopRecording();
-            };
-        }
+        recognition.onend = function() {
+            stopRecording();
+        };
+    }
 
-        // Helper function to detect file type
-        function isImageFile(filename) {
-            const imageExtensions = ['.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp'];
-            const lowerFilename = filename.toLowerCase();
-            return imageExtensions.some(ext => lowerFilename.endsWith(ext));
-        }
+    // Helper function to detect file type
+    function isImageFile(filename) {
+        const imageExtensions = ['.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp'];
+        const lowerFilename = filename.toLowerCase();
+        return imageExtensions.some(ext => lowerFilename.endsWith(ext));
+    }
 
-        function isAudioFile(filename) {
-            const audioExtensions = ['.wav', '.mp3', '.aiff', '.aac', '.ogg', '.flac'];
-            const lowerFilename = filename.toLowerCase();
-            return audioExtensions.some(ext => lowerFilename.endsWith(ext));
-        }
+    function isAudioFile(filename) {
+        const audioExtensions = ['.wav', '.mp3', '.aiff', '.aac', '.ogg', '.flac'];
+        const lowerFilename = filename.toLowerCase();
+        return audioExtensions.some(ext => lowerFilename.endsWith(ext));
+    }
 
-        // Inactivity timer functions
-        function resetInactivityTimer() {
-            if (inactivityTimer) {
-                clearTimeout(inactivityTimer);
-            }
-            
-            // Don't reset timer if waiting for user responses or session has ended
-            if (waitingForMoreQuestionsResponse || waitingForUploadResponse || sessionEnded) {
-                return;
-            }
-            
-            inactivityTimer = setTimeout(handleInactivity, 7000); // 7 seconds
+    // Timer functions
+    function startInactivityTimer() {
+        // Clear any existing timer
+        if (inactivityTimer) {
+            clearTimeout(inactivityTimer);
+            inactivityTimer = null;
         }
         
-        function handleInactivity() {
-            const messagesDiv = document.getElementById('chatMessages');
-            const hasMessages = messagesDiv.querySelectorAll('.message').length > 0;
-            
-            if (hasMessages && !waitingForMoreQuestionsResponse && !waitingForUploadResponse) {
-                waitingForMoreQuestionsResponse = true;
-                addMessage('Do you have any more questions?', false, false, false);
-            }
+        // CRITICAL: Don't start if awaiting file upload
+        if (waitingForMoreQuestionsResponse || 
+            waitingForUploadResponse || 
+            sessionEnded || 
+            awaitingFileUpload) {
+            console.log('Timer blocked - awaiting file upload or in waiting state');
+            return;
         }
+        
+        console.log('Starting 7 second inactivity timer...');
+        inactivityTimer = setTimeout(() => {
+            handleInactivity();
+        }, 7000);
+    }
+    
+    function stopInactivityTimer() {
+        if (inactivityTimer) {
+            clearTimeout(inactivityTimer);
+            inactivityTimer = null;
+            console.log('Inactivity timer stopped');
+        }
+    }
+    
+    function handleInactivity() {
+        const messagesDiv = document.getElementById('chatMessages');
+        const hasMessages = messagesDiv.querySelectorAll('.message').length > 0;
+        
+        if (hasMessages && 
+            !waitingForMoreQuestionsResponse && 
+            !waitingForUploadResponse && 
+            !sessionEnded && 
+            !awaitingFileUpload) {
+            console.log('Inactivity detected - showing prompt');
+            waitingForMoreQuestionsResponse = true;
+            addMessage('Do you have any more questions?', false, false, false);
+        } else {
+            console.log('Inactivity check blocked');
+        }
+    }
 
-        // Initialize TTS
-        function initTTS() {
-            if ('speechSynthesis' in window) {
-                let voices = speechSynthesis.getVoices();
-                if (voices.length === 0) {
-                    speechSynthesis.addEventListener('voiceschanged', () => {
-                        voices = speechSynthesis.getVoices();
-                        console.log(`TTS Ready: ${voices.length} voices available`);
-                    }, { once: true });
-                } else {
+    function openFileUpload() {
+        console.log('Opening file upload dialog');
+        stopInactivityTimer();
+        document.getElementById('fileInput').click();
+    }
+
+    // Initialize TTS
+    function initTTS() {
+        if ('speechSynthesis' in window) {
+            let voices = speechSynthesis.getVoices();
+            if (voices.length === 0) {
+                speechSynthesis.addEventListener('voiceschanged', () => {
+                    voices = speechSynthesis.getVoices();
                     console.log(`TTS Ready: ${voices.length} voices available`);
+                }, { once: true });
+            } else {
+                console.log(`TTS Ready: ${voices.length} voices available`);
+            }
+        }
+    }
+
+    function getFemaleVoice() {
+        const voices = speechSynthesis.getVoices();
+
+        if (!window.selectedVoice) {
+            const preferredVoices = [
+                'Microsoft Aria Online (Natural)',
+                'Google UK English Female',
+                'Google US English Female',
+                'Microsoft Zira Desktop',
+                'Samantha',
+                'Karen',
+                'Moira',
+                'Tessa',
+                'Victoria',
+                'Serena'
+            ];
+
+            for (let preferred of preferredVoices) {
+                const voice = voices.find(v => v.name.includes(preferred));
+                if (voice) {
+                    window.selectedVoice = voice;
+                    console.log('Voice selected:', voice.name);
+                    break;
                 }
             }
-        }
-
-        // Get best quality natural female voice
-        function getFemaleVoice() {
-            const voices = speechSynthesis.getVoices();
 
             if (!window.selectedVoice) {
-                const preferredVoices = [
-                    'Microsoft Aria Online (Natural)',
-                    'Google UK English Female',
-                    'Google US English Female',
-                    'Microsoft Zira Desktop',
-                    'Samantha',
-                    'Karen',
-                    'Moira',
-                    'Tessa',
-                    'Victoria',
-                    'Serena'
-                ];
-
-                for (let preferred of preferredVoices) {
-                    const voice = voices.find(v => v.name.includes(preferred));
-                    if (voice) {
-                        window.selectedVoice = voice;
-                        console.log('Voice selected:', voice.name);
-                        break;
-                    }
-                }
-
-                if (!window.selectedVoice) {
-                    const naturalVoice = voices.find(v => 
-                        (v.name.toLowerCase().includes('natural') || 
-                         v.name.toLowerCase().includes('female') ||
-                         v.name.toLowerCase().includes('neural')) &&
-                        v.lang.startsWith('en')
-                    );
-                    window.selectedVoice = naturalVoice || voices.find(v => v.lang.startsWith('en')) || voices[0];
-                    console.log('Voice selected:', window.selectedVoice.name);
-                }
+                const naturalVoice = voices.find(v => 
+                    (v.name.toLowerCase().includes('natural') || 
+                     v.name.toLowerCase().includes('female') ||
+                     v.name.toLowerCase().includes('neural')) &&
+                    v.lang.startsWith('en')
+                );
+                window.selectedVoice = naturalVoice || voices.find(v => v.lang.startsWith('en')) || voices[0];
+                console.log('Voice selected:', window.selectedVoice.name);
             }
-
-            return window.selectedVoice;
         }
 
-        function speakText(text, button) {
-            if (isSpeaking && currentSpeakingButton === button) {
-                stopSpeech();
-                return;
-            }
+        return window.selectedVoice;
+    }
 
+    function speakText(text, button) {
+        if (isSpeaking && currentSpeakingButton === button) {
             stopSpeech();
-            setTimeout(() => startSpeech(text, button), 150);
+            return;
         }
 
-        function stopSpeech() {
-            if (speechSynthesis.speaking) {
-                speechSynthesis.cancel();
-            }
+        stopSpeech();
+        setTimeout(() => startSpeech(text, button), 150);
+    }
 
-            if (currentSpeakingButton) {
-                currentSpeakingButton.classList.remove('speaking');
-                currentSpeakingButton.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02z"/></svg>`;
+    function stopSpeech() {
+        if (speechSynthesis.speaking) {
+            speechSynthesis.cancel();
+        }
+
+        if (currentSpeakingButton) {
+            currentSpeakingButton.classList.remove('speaking');
+            currentSpeakingButton.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02z"/></svg>`;
+            currentSpeakingButton = null;
+        }
+
+        currentUtterance = null;
+        isSpeaking = false;
+    }
+
+    function startSpeech(text, button) {
+        if (isSpeaking) {
+            console.warn('Speech already in progress, skipping');
+            return;
+        }
+
+        const utterance = new SpeechSynthesisUtterance(text);
+        const femaleVoice = getFemaleVoice();
+
+        if (femaleVoice) {
+            utterance.voice = femaleVoice;
+        }
+
+        utterance.rate = 0.92;
+        utterance.pitch = 1.05;
+        utterance.volume = 0.85;
+
+        button.classList.add('speaking');
+        button.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M6 6h12v12H6z"/></svg>`;
+        currentSpeakingButton = button;
+        currentUtterance = utterance;
+        isSpeaking = true;
+
+        utterance.onstart = () => {
+            console.log('Speech started');
+        };
+
+        utterance.onend = () => {
+            console.log('Speech ended');
+            if (button) {
+                button.classList.remove('speaking');
+                button.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02z"/></svg>`;
                 currentSpeakingButton = null;
             }
-
             currentUtterance = null;
             isSpeaking = false;
-        }
+        };
 
-        function startSpeech(text, button) {
-            if (isSpeaking) {
-                console.warn('Speech already in progress, skipping');
-                return;
+        utterance.onerror = (event) => {
+            console.error('Speech error:', event.error);
+            if (button) {
+                button.classList.remove('speaking');
+                button.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02z"/></svg>`;
+                currentSpeakingButton = null;
             }
+            currentUtterance = null;
+            isSpeaking = false;
+        };
 
-            const utterance = new SpeechSynthesisUtterance(text);
-            const femaleVoice = getFemaleVoice();
+        speechSynthesis.speak(utterance);
+    }
 
-            if (femaleVoice) {
-                utterance.voice = femaleVoice;
-            }
+    function isGreeting(message) {
+        const greetings = ['hello', 'hi', 'hii', 'hey', 'good morning', 'good afternoon', 'good evening', 'greetings', 'hai'];
+        const lowerMessage = message.toLowerCase().trim();
+        return greetings.some(greeting => lowerMessage === greeting || lowerMessage.startsWith(greeting));
+    }
 
-            utterance.rate = 0.92;
-            utterance.pitch = 1.05;
-            utterance.volume = 0.85;
+    function isGoodbye(message) {
+        const goodbyes = ['bye', 'goodbye', 'see you', 'farewell', 'take care', 'exit', 'quit'];
+        const lowerMessage = message.toLowerCase().trim();
+        return goodbyes.some(goodbye => lowerMessage.includes(goodbye));
+    }
 
-            button.classList.add('speaking');
-            button.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M6 6h12v12H6z"/></svg>`;
-            currentSpeakingButton = button;
-            currentUtterance = utterance;
-            isSpeaking = true;
+    function showFeedbackModal() {
+        const modal = document.createElement('div');
+        modal.id = 'feedbackModal';
+        modal.style.cssText = 'position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0, 0, 0, 0.85); display: flex; align-items: center; justify-content: center; z-index: 10000; animation: fadeIn 0.4s ease; backdrop-filter: blur(8px);';
 
-            utterance.onstart = () => {
-                console.log('Speech started');
-            };
+        modal.innerHTML = `
+            <div style="background: linear-gradient(145deg, rgba(30, 40, 54, 0.98) 0%, rgba(35, 47, 62, 0.98) 50%, rgba(40, 52, 67, 0.98) 100%); padding: 45px 40px; border-radius: 24px; max-width: 500px; width: 92%; box-shadow: 0 25px 80px rgba(0, 0, 0, 0.6), 0 0 1px rgba(255, 255, 255, 0.1) inset; backdrop-filter: blur(20px); border: 1.5px solid rgba(255, 255, 255, 0.08); position: relative; overflow: hidden;">
+                
+                <div style="position: absolute; top: -50px; right: -50px; width: 150px; height: 150px; background: radial-gradient(circle, rgba(52, 152, 219, 0.15) 0%, transparent 70%); border-radius: 50%; pointer-events: none;"></div>
+                <div style="position: absolute; bottom: -30px; left: -30px; width: 120px; height: 120px; background: radial-gradient(circle, rgba(231, 76, 60, 0.1) 0%, transparent 70%); border-radius: 50%; pointer-events: none;"></div>
+                
+                <div style="width: 80px; height: 80px; margin: 0 auto 25px; background: linear-gradient(135deg, rgba(52, 152, 219, 0.2) 0%, rgba(52, 152, 219, 0.05) 100%); border-radius: 50%; display: flex; align-items: center; justify-content: center; border: 2px solid rgba(52, 152, 219, 0.3); box-shadow: 0 8px 24px rgba(52, 152, 219, 0.2);">
+                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" style="width: 42px; height: 42px; fill: #3498db;">
+                        <path d="M20 2H4c-1.1 0-2 .9-2 2v18l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm0 14H6l-2 2V4h16v12z"/>
+                        <path d="M6 9h12v2H6zm0-3h12v2H6zm0 6h8v2H6z"/>
+                    </svg>
+                </div>
+                
+                <h2 style="color: #ecf0f1; margin-bottom: 12px; font-size: 26px; text-align: center; font-weight: 600; letter-spacing: -0.5px;">We Value Your Feedback</h2>
+                <p style="color: #95a5a6; margin-bottom: 32px; text-align: center; font-size: 15px; line-height: 1.5;">Help us improve your experience with Image/Audio Assistant</p>
 
-            utterance.onend = () => {
-                console.log('Speech ended');
-                if (button) {
-                    button.classList.remove('speaking');
-                    button.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02z"/></svg>`;
-                    currentSpeakingButton = null;
-                }
-                currentUtterance = null;
-                isSpeaking = false;
-            };
-
-            utterance.onerror = (event) => {
-                console.error('Speech error:', event.error);
-                if (button) {
-                    button.classList.remove('speaking');
-                    button.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02z"/></svg>`;
-                    currentSpeakingButton = null;
-                }
-                currentUtterance = null;
-                isSpeaking = false;
-            };
-
-            speechSynthesis.speak(utterance);
-        }
-
-        function isGreeting(message) {
-            const greetings = ['hello', 'hi', 'hii', 'hey', 'good morning', 'good afternoon', 'good evening', 'greetings', 'hai'];
-            const lowerMessage = message.toLowerCase().trim();
-            return greetings.some(greeting => lowerMessage === greeting || lowerMessage.startsWith(greeting));
-        }
-
-        function isGoodbye(message) {
-            const goodbyes = ['bye', 'goodbye', 'see you', 'farewell', 'take care', 'exit', 'quit'];
-            const lowerMessage = message.toLowerCase().trim();
-            return goodbyes.some(goodbye => lowerMessage.includes(goodbye));
-        }
-
-        function showFeedbackModal() {
-            const modal = document.createElement('div');
-            modal.id = 'feedbackModal';
-            modal.style.cssText = 'position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0, 0, 0, 0.85); display: flex; align-items: center; justify-content: center; z-index: 10000; animation: fadeIn 0.4s ease; backdrop-filter: blur(8px);';
-
-            modal.innerHTML = `
-                <div style="background: linear-gradient(145deg, rgba(30, 40, 54, 0.98) 0%, rgba(35, 47, 62, 0.98) 50%, rgba(40, 52, 67, 0.98) 100%); padding: 45px 40px; border-radius: 24px; max-width: 500px; width: 92%; box-shadow: 0 25px 80px rgba(0, 0, 0, 0.6), 0 0 1px rgba(255, 255, 255, 0.1) inset; backdrop-filter: blur(20px); border: 1.5px solid rgba(255, 255, 255, 0.08); position: relative; overflow: hidden;">
-                    
-                    <!-- Decorative elements -->
-                    <div style="position: absolute; top: -50px; right: -50px; width: 150px; height: 150px; background: radial-gradient(circle, rgba(52, 152, 219, 0.15) 0%, transparent 70%); border-radius: 50%; pointer-events: none;"></div>
-                    <div style="position: absolute; bottom: -30px; left: -30px; width: 120px; height: 120px; background: radial-gradient(circle, rgba(231, 76, 60, 0.1) 0%, transparent 70%); border-radius: 50%; pointer-events: none;"></div>
-                    
-                    <!-- Icon -->
-                    <div style="width: 80px; height: 80px; margin: 0 auto 25px; background: linear-gradient(135deg, rgba(52, 152, 219, 0.2) 0%, rgba(52, 152, 219, 0.05) 100%); border-radius: 50%; display: flex; align-items: center; justify-content: center; border: 2px solid rgba(52, 152, 219, 0.3); box-shadow: 0 8px 24px rgba(52, 152, 219, 0.2);">
-                        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" style="width: 42px; height: 42px; fill: #3498db;">
-                            <path d="M20 2H4c-1.1 0-2 .9-2 2v18l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm0 14H6l-2 2V4h16v12z"/>
-                            <path d="M6 9h12v2H6zm0-3h12v2H6zm0 6h8v2H6z"/>
-                        </svg>
+                <div style="margin-bottom: 30px;">
+                    <label style="color: #bdc3c7; display: block; margin-bottom: 16px; font-weight: 600; font-size: 14px; text-transform: uppercase; letter-spacing: 0.5px;">Rate Your Experience</label>
+                    <div id="starRating" style="display: flex; gap: 18px; justify-content: center; margin-bottom: 8px;">
+                        ${[1, 2, 3, 4, 5].map(i => `<span class="rating-star" data-rating="${i}" style="font-size: 48px; cursor: pointer; color: rgba(74, 95, 127, 0.4); transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1); filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.2)); position: relative;">⭐</span>`).join('')}
                     </div>
-                    
-                    <h2 style="color: #ecf0f1; margin-bottom: 12px; font-size: 26px; text-align: center; font-weight: 600; letter-spacing: -0.5px;">We Value Your Feedback</h2>
-                    <p style="color: #95a5a6; margin-bottom: 32px; text-align: center; font-size: 15px; line-height: 1.5;">Help us improve your experience with Image/Audio Assistant</p>
-
-                    <div style="margin-bottom: 30px;">
-                        <label style="color: #bdc3c7; display: block; margin-bottom: 16px; font-weight: 600; font-size: 14px; text-transform: uppercase; letter-spacing: 0.5px;">Rate Your Experience</label>
-                        <div id="starRating" style="display: flex; gap: 18px; justify-content: center; margin-bottom: 8px;">
-                            ${[1, 2, 3, 4, 5].map(i => `<span class="rating-star" data-rating="${i}" style="font-size: 48px; cursor: pointer; color: rgba(74, 95, 127, 0.4); transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1); filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.2)); position: relative;">⭐</span>`).join('')}
-                        </div>
-                        <div style="text-align: center; min-height: 24px; margin-top: 12px;">
-                            <span id="ratingLabel" style="color: #7f8c8d; font-size: 13px; font-weight: 500; opacity: 0; transition: opacity 0.3s;"></span>
-                        </div>
-                    </div>
-
-                    <div style="margin-bottom: 32px;">
-                        <label style="color: #bdc3c7; display: block; margin-bottom: 12px; font-weight: 600; font-size: 14px; text-transform: uppercase; letter-spacing: 0.5px;">Additional Comments <span style="color: #7f8c8d; font-size: 12px; font-weight: 400; text-transform: none;">(Optional)</span></label>
-                        <textarea id="feedbackComment" placeholder="Share your thoughts, suggestions, or any issues you encountered..." style="width: 100%; padding: 16px; border: 1.5px solid rgba(74, 95, 127, 0.3); border-radius: 12px; background: rgba(20, 30, 44, 0.5); color: #ecf0f1; font-size: 14px; resize: vertical; min-height: 100px; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; transition: all 0.3s; line-height: 1.6; box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1) inset;" onfocus="this.style.borderColor='rgba(52, 152, 219, 0.6)'; this.style.background='rgba(20, 30, 44, 0.8)';" onblur="this.style.borderColor='rgba(74, 95, 127, 0.3)'; this.style.background='rgba(20, 30, 44, 0.5)';"></textarea>
-                    </div>
-
-                    <div style="display: flex; gap: 14px; justify-content: center;">
-                        <button onclick="submitFeedbackFromModal()" style="padding: 14px 36px; background: linear-gradient(135deg, #3498db 0%, #2980b9 100%); color: white; border: none; border-radius: 12px; font-size: 15px; font-weight: 600; cursor: pointer; transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1); box-shadow: 0 4px 15px rgba(52, 152, 219, 0.4); position: relative; overflow: hidden; letter-spacing: 0.3px;" onmouseover="this.style.transform='translateY(-2px)'; this.style.boxShadow='0 6px 20px rgba(52, 152, 219, 0.5)';" onmouseout="this.style.transform='translateY(0)'; this.style.boxShadow='0 4px 15px rgba(52, 152, 219, 0.4)';">
-                            <span style="position: relative; z-index: 1;">Submit Feedback</span>
-                        </button>
-                        <button onclick="closeFeedbackModal()" style="padding: 14px 36px; background: rgba(55, 67, 82, 0.6); color: #bdc3c7; border: 1.5px solid rgba(255, 255, 255, 0.1); border-radius: 12px; font-size: 15px; font-weight: 600; cursor: pointer; transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1); letter-spacing: 0.3px;" onmouseover="this.style.background='rgba(65, 77, 92, 0.8)'; this.style.borderColor='rgba(255, 255, 255, 0.15)'; this.style.color='#ecf0f1';" onmouseout="this.style.background='rgba(55, 67, 82, 0.6)'; this.style.borderColor='rgba(255, 255, 255, 0.1)'; this.style.color='#bdc3c7';">Skip</button>
+                    <div style="text-align: center; min-height: 24px; margin-top: 12px;">
+                        <span id="ratingLabel" style="color: #7f8c8d; font-size: 13px; font-weight: 500; opacity: 0; transition: opacity 0.3s;"></span>
                     </div>
                 </div>
-            `;
 
-            document.body.appendChild(modal);
+                <div style="margin-bottom: 32px;">
+                    <label style="color: #bdc3c7; display: block; margin-bottom: 12px; font-weight: 600; font-size: 14px; text-transform: uppercase; letter-spacing: 0.5px;">Additional Comments <span style="color: #7f8c8d; font-size: 12px; font-weight: 400; text-transform: none;">(Optional)</span></label>
+                    <textarea id="feedbackComment" placeholder="Share your thoughts, suggestions, or any issues you encountered..." style="width: 100%; padding: 16px; border: 1.5px solid rgba(74, 95, 127, 0.3); border-radius: 12px; background: rgba(20, 30, 44, 0.5); color: #ecf0f1; font-size: 14px; resize: vertical; min-height: 100px; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; transition: all 0.3s; line-height: 1.6; box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1) inset;" onfocus="this.style.borderColor='rgba(52, 152, 219, 0.6)'; this.style.background='rgba(20, 30, 44, 0.8)';" onblur="this.style.borderColor='rgba(74, 95, 127, 0.3)'; this.style.background='rgba(20, 30, 44, 0.5)';"></textarea>
+                </div>
 
-            let selectedRating = 0;
-            const stars = modal.querySelectorAll('.rating-star');
-            const ratingLabel = modal.querySelector('#ratingLabel');
-            const ratingLabels = ['', 'Poor', 'Fair', 'Good', 'Very Good', 'Excellent'];
+                <div style="display: flex; gap: 14px; justify-content: center;">
+                    <button onclick="submitFeedbackFromModal()" style="padding: 14px 36px; background: linear-gradient(135deg, #3498db 0%, #2980b9 100%); color: white; border: none; border-radius: 12px; font-size: 15px; font-weight: 600; cursor: pointer; transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1); box-shadow: 0 4px 15px rgba(52, 152, 219, 0.4); position: relative; overflow: hidden; letter-spacing: 0.3px;" onmouseover="this.style.transform='translateY(-2px)'; this.style.boxShadow='0 6px 20px rgba(52, 152, 219, 0.5)';" onmouseout="this.style.transform='translateY(0)'; this.style.boxShadow='0 4px 15px rgba(52, 152, 219, 0.4)';">
+                        <span style="position: relative; z-index: 1;">Submit Feedback</span>
+                    </button>
+                    <button onclick="closeFeedbackModal()" style="padding: 14px 36px; background: rgba(55, 67, 82, 0.6); color: #bdc3c7; border: 1.5px solid rgba(255, 255, 255, 0.1); border-radius: 12px; font-size: 15px; font-weight: 600; cursor: pointer; transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1); letter-spacing: 0.3px;" onmouseover="this.style.background='rgba(65, 77, 92, 0.8)'; this.style.borderColor='rgba(255, 255, 255, 0.15)'; this.style.color='#ecf0f1';" onmouseout="this.style.background='rgba(55, 67, 82, 0.6)'; this.style.borderColor='rgba(255, 255, 255, 0.1)'; this.style.color='#bdc3c7';">Skip</button>
+                </div>
+            </div>
+        `;
 
-            stars.forEach(star => {
-                star.addEventListener('mouseenter', function() {
-                    const rating = parseInt(this.getAttribute('data-rating'));
-                    updateStars(rating, stars);
-                    ratingLabel.textContent = ratingLabels[rating];
-                    ratingLabel.style.opacity = '1';
-                });
+        document.body.appendChild(modal);
 
-                star.addEventListener('click', function() {
-                    selectedRating = parseInt(this.getAttribute('data-rating'));
-                    updateStars(selectedRating, stars);
-                    modal.dataset.selectedRating = selectedRating;
-                    ratingLabel.textContent = ratingLabels[selectedRating];
-                    ratingLabel.style.opacity = '1';
-                    
-                    // Add click animation
-                    stars.forEach((s, idx) => {
-                        if (idx < selectedRating) {
-                            s.style.transform = 'scale(1.3)';
-                            setTimeout(() => { s.style.transform = 'scale(1)'; }, 200);
-                        }
-                    });
-                });
-            });
+        let selectedRating = 0;
+        const stars = modal.querySelectorAll('.rating-star');
+        const ratingLabel = modal.querySelector('#ratingLabel');
+        const ratingLabels = ['', 'Poor', 'Fair', 'Good', 'Very Good', 'Excellent'];
 
-            const modalContent = modal.querySelector('div');
-            modalContent.addEventListener('mouseleave', () => {
-                const currentRating = parseInt(modal.dataset.selectedRating || '0');
-                updateStars(currentRating, stars);
-                if (currentRating > 0) {
-                    ratingLabel.textContent = ratingLabels[currentRating];
-                    ratingLabel.style.opacity = '1';
-                } else {
-                    ratingLabel.style.opacity = '0';
-                }
-            });
-        }
-
-        function updateStars(rating, stars) {
-            stars.forEach((star, index) => {
-                if (index < rating) {
-                    star.style.color = '#f39c12';
-                    star.style.transform = 'scale(1.15)';
-                    star.style.filter = 'drop-shadow(0 0 8px rgba(243, 156, 18, 0.6))';
-                } else {
-                    star.style.color = 'rgba(74, 95, 127, 0.4)';
-                    star.style.transform = 'scale(1)';
-                    star.style.filter = 'drop-shadow(0 2px 4px rgba(0, 0, 0, 0.2))';
-                }
-            });
-        }
-
-        function submitFeedbackFromModal() {
-            const modal = document.getElementById('feedbackModal');
-            const rating = parseInt(modal.dataset.selectedRating || '0');
-            const comment = document.getElementById('feedbackComment').value.trim();
-
-            if (rating === 0) {
-                const ratingLabel = modal.querySelector('#ratingLabel');
-                ratingLabel.textContent = 'Please select a rating';
-                ratingLabel.style.color = '#e74c3c';
+        stars.forEach(star => {
+            star.addEventListener('mouseenter', function() {
+                const rating = parseInt(this.getAttribute('data-rating'));
+                updateStars(rating, stars);
+                ratingLabel.textContent = ratingLabels[rating];
                 ratingLabel.style.opacity = '1';
-                ratingLabel.style.fontWeight = '600';
+            });
+
+            star.addEventListener('click', function() {
+                selectedRating = parseInt(this.getAttribute('data-rating'));
+                updateStars(selectedRating, stars);
+                modal.dataset.selectedRating = selectedRating;
+                ratingLabel.textContent = ratingLabels[selectedRating];
+                ratingLabel.style.opacity = '1';
                 
-                // Shake animation for stars
-                const stars = modal.querySelectorAll('.rating-star');
-                stars.forEach(star => {
-                    star.style.animation = 'shake 0.5s';
-                    setTimeout(() => { star.style.animation = ''; }, 500);
+                stars.forEach((s, idx) => {
+                    if (idx < selectedRating) {
+                        s.style.transform = 'scale(1.3)';
+                        setTimeout(() => { s.style.transform = 'scale(1)'; }, 200);
+                    }
                 });
+            });
+        });
+
+        const modalContent = modal.querySelector('div');
+        modalContent.addEventListener('mouseleave', () => {
+            const currentRating = parseInt(modal.dataset.selectedRating || '0');
+            updateStars(currentRating, stars);
+            if (currentRating > 0) {
+                ratingLabel.textContent = ratingLabels[currentRating];
+                ratingLabel.style.opacity = '1';
+            } else {
+                ratingLabel.style.opacity = '0';
+            }
+        });
+    }
+
+    function updateStars(rating, stars) {
+        stars.forEach((star, index) => {
+            if (index < rating) {
+                star.style.color = '#f39c12';
+                star.style.transform = 'scale(1.15)';
+                star.style.filter = 'drop-shadow(0 0 8px rgba(243, 156, 18, 0.6))';
+            } else {
+                star.style.color = 'rgba(74, 95, 127, 0.4)';
+                star.style.transform = 'scale(1)';
+                star.style.filter = 'drop-shadow(0 2px 4px rgba(0, 0, 0, 0.2))';
+            }
+        });
+    }
+
+    function submitFeedbackFromModal() {
+        const modal = document.getElementById('feedbackModal');
+        const rating = parseInt(modal.dataset.selectedRating || '0');
+        const comment = document.getElementById('feedbackComment').value.trim();
+
+        if (rating === 0) {
+            const ratingLabel = modal.querySelector('#ratingLabel');
+            ratingLabel.textContent = 'Please select a rating';
+            ratingLabel.style.color = '#e74c3c';
+            ratingLabel.style.opacity = '1';
+            ratingLabel.style.fontWeight = '600';
+            
+            const stars = modal.querySelectorAll('.rating-star');
+            stars.forEach(star => {
+                star.style.animation = 'shake 0.5s';
+                setTimeout(() => { star.style.animation = ''; }, 500);
+            });
+            
+            return;
+        }
+
+        fetch('/feedback', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                session_id: sessionId,
+                rating: rating,
+                comment: comment
+            })
+        })
+        .then(response => response.json())
+        .then(data => {
+            if (data.success) {
+                showToast('Thank you for your feedback!', 'success');
+                document.getElementById('feedbackStatus').textContent = `Last rating: ${rating}/5`;
+                userHasFeedback = true;
                 
+                const exportBtn = document.getElementById('exportFeedbackBtn');
+                exportBtn.disabled = false;
+                exportBtn.style.display = 'block';
+                
+                closeFeedbackModal();
+            }
+        })
+        .catch(error => {
+            console.error('Feedback error:', error);
+            showToast('Failed to submit feedback', 'error');
+        });
+    }
+
+    function closeFeedbackModal() {
+        const modal = document.getElementById('feedbackModal');
+        if (modal) {
+            modal.style.animation = 'fadeIn 0.3s ease reverse';
+            setTimeout(() => modal.remove(), 300);
+        }
+    }
+
+    async function initSession() {
+        try {
+            const response = await fetch('/init_session', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ session_id: sessionId })
+            });
+
+            const data = await response.json();
+
+            if (data.files && data.files.length > 0) {
+                document.getElementById('kbStatus').textContent = `${data.files.length} file${data.files.length !== 1 ? 's' : ''} loaded. You can upload more files to expand the collection.`;
+                updateFileList(data.files);
+            }
+        } catch (error) {
+            console.error('Init error:', error);
+        }
+    }
+
+    function toggleSidebar() {
+        const sidebar = document.getElementById('sidebar');
+        sidebar.classList.toggle('collapsed');
+    }
+
+    function toggleRecording() {
+        if (!recognition) {
+            alert('Speech recognition is not supported in your browser.');
+            return;
+        }
+
+        if (isRecording) {
+            recognition.stop();
+        } else {
+            recognition.start();
+            document.getElementById('micBtn').classList.add('recording');
+            isRecording = true;
+        }
+        
+        stopInactivityTimer();
+    }
+
+    function stopRecording() {
+        isRecording = false;
+        document.getElementById('micBtn').classList.remove('recording');
+    }
+
+    function handleKeyPress(event) {
+        if (event.key === 'Enter' && !event.shiftKey) {
+            event.preventDefault();
+            sendMessage(false);
+        }
+        stopInactivityTimer();
+    }
+
+    async function sendMessage(isVoiceInput = false) {
+        const input = document.getElementById('messageInput');
+        const message = input.value.trim();
+
+        if (!message) return;
+
+        stopInactivityTimer();
+
+        const lowerMessage = message.toLowerCase();
+
+        if (waitingForMoreQuestionsResponse) {
+            addMessage(message, true);
+            input.value = '';
+            
+            if (lowerMessage === 'no' || lowerMessage.includes('no') || 
+                lowerMessage === 'nope' || lowerMessage === 'nah' ||
+                lowerMessage === 'not really' || lowerMessage === 'no thanks') {
+                waitingForMoreQuestionsResponse = false;
+                waitingForUploadResponse = true;
+                addMessage('Would you like to upload a different file? (yes/no)', false, false, false);
+                return;
+            } else if (lowerMessage === 'yes' || lowerMessage.includes('yes')) {
+                waitingForMoreQuestionsResponse = false;
+                addMessage('Please go ahead with your question.', false, false, false);
+                startInactivityTimer();
+                return;
+            } else {
+                waitingForMoreQuestionsResponse = false;
+            }
+        }
+        else if (waitingForUploadResponse) {
+            addMessage(message, true);
+            input.value = '';
+            
+            if (lowerMessage === 'yes' || lowerMessage.includes('yes')) {
+                waitingForUploadResponse = false;
+                await clearChatAndPromptUpload();
+                return;
+            } else if (lowerMessage === 'no' || lowerMessage.includes('no') ||
+                    lowerMessage === 'nope' || lowerMessage === 'nah' ||
+                    lowerMessage === 'not really' || lowerMessage === 'no thanks') {
+                waitingForUploadResponse = false;
+                stopInactivityTimer();
+                sessionEnded = true;
+                const finalGreeting = 'Thank you for using Image/Audio Assistant! Have a great day!';
+                addMessage(finalGreeting, false, false, false);
+                setTimeout(() => showFeedbackModal(), 1500);
+                return;
+            }
+        }
+        else {
+            if (isGreeting(message)) {
+                addMessage(message, true);
+                input.value = '';
+                const greetingResponse = 'Hello! How can I assist you with image or audio analysis today?';
+                addMessage(greetingResponse, false, isVoiceInput, false);
+                startInactivityTimer();
                 return;
             }
 
-            fetch('/feedback', {
+            if (isGoodbye(message)) {
+                addMessage(message, true);
+                input.value = '';
+                stopInactivityTimer();
+                sessionEnded = true;
+                const goodbyeResponse = 'Thank you for using Image/Audio Assistant! We hope to see you again soon.';
+                addMessage(goodbyeResponse, false, false, false);
+                setTimeout(() => showFeedbackModal(), 1500);
+                return;
+            }
+            
+            addMessage(message, true);
+            input.value = '';
+        }
+
+        const loadingId = addLoadingMessage();
+
+        try {
+            const response = await fetch('/chat', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json'
                 },
                 body: JSON.stringify({
                     session_id: sessionId,
-                    rating: rating,
-                    comment: comment
+                    message: message,
+                    is_voice_input: isVoiceInput,
+                    file_type: currentFileType
                 })
-            })
-            .then(response => response.json())
-            .then(data => {
-                if (data.success) {
-                    showToast('Thank you for your feedback!', 'success');
-                    document.getElementById('feedbackStatus').textContent = `Last rating: ${rating}/5`;
-                    userHasFeedback = true;
-                    
-                    // Show the Export Feedback button
-                    const exportBtn = document.getElementById('exportFeedbackBtn');
-                    exportBtn.disabled = false;
-                    exportBtn.style.display = 'block';
-                    
-                    closeFeedbackModal();
+            });
+
+            const data = await response.json();
+            removeMessage(loadingId);
+
+            if (data.error) {
+                addMessage(`Error: ${data.error}`, false, false, false);
+            } else {
+                const showTicket = data.show_ticket_button && currentFileType === 'image';
+                addMessage(data.response, false, isVoiceInput, showTicket);
+                
+                startInactivityTimer();
+                
+                if (data.session_ended && data.trigger_feedback) {
+                    stopInactivityTimer();
+                    sessionEnded = true;
+                    setTimeout(() => showFeedbackModal(), 1500);
                 }
-            })
-            .catch(error => {
-                console.error('Feedback error:', error);
-                showToast('Failed to submit feedback', 'error');
+            }
+        } catch (error) {
+            removeMessage(loadingId);
+            addMessage('Error: Failed to send message', false, false, false);
+            console.error('Send error:', error);
+        }
+    }
+    
+    async function clearChatAndPromptUpload() {
+        try {
+            await fetch('/clear', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ session_id: sessionId })
+            });
+
+            uploadedFiles = [];
+            currentFileType = null;
+            document.getElementById('fileList').innerHTML = '';
+            document.getElementById('kbStatus').textContent = 'No files found in collection. You can upload image or audio files to get started.';
+            
+            document.getElementById('chatMessages').innerHTML = `
+                <div class="welcome-message">
+                    <div class="welcome-avatar">
+                        <img src="static/HR-chat-icon.png" alt="Assistant" onerror="this.onerror=null; this.src='static/HR-chat-icon.jpg'">
+                    </div>
+                    <h2>Hello! I'm your Image/Audio Assistant.</h2>
+                    <p>I can analyze images and audio files. Upload a file to get started, and I'm ready to help with your questions.</p>
+                </div>
+            `;
+
+            ticketCreated = false;
+            sessionEnded = false;
+            waitingForMoreQuestionsResponse = false;
+            waitingForUploadResponse = false;
+            
+            openFileUpload();
+            showToast('Please upload a new file', 'success');
+        } catch (error) {
+            console.error('Clear error:', error);
+            showToast('Failed to clear chat', 'error');
+        }
+    }
+
+    function addLoadingMessage() {
+        const messagesDiv = document.getElementById('chatMessages');
+        const welcomeMsg = messagesDiv.querySelector('.welcome-message');
+        if (welcomeMsg) welcomeMsg.remove();
+
+        const messageId = `msg_loading_${Date.now()}`;
+        const messageDiv = document.createElement('div');
+        messageDiv.className = 'message bot-message';
+        messageDiv.id = messageId;
+
+        messageDiv.innerHTML = `<div class="message-avatar bot-avatar">
+                <img src="static/HR-chat-icon.png" alt="Assistant" onerror="this.onerror=null; this.src='static/HR-chat-icon.jpg'">
+            </div>
+            <div class="message-content">
+                <div class="loading"></div>
+            </div>
+        `;
+
+        messagesDiv.appendChild(messageDiv);
+        messagesDiv.scrollTop = messagesDiv.scrollHeight;
+
+        return messageId;
+    }
+
+    function addMessage(content, isUser, autoSpeak = false, showTicketButton = false) {
+        const messagesDiv = document.getElementById('chatMessages');
+        const welcomeMsg = messagesDiv.querySelector('.welcome-message');
+        if (welcomeMsg) welcomeMsg.remove();
+
+        const messageId = `msg_${Date.now()}`;
+        const messageDiv = document.createElement('div');
+        messageDiv.className = `message ${isUser ? 'user-message' : 'bot-message'}`;
+        messageDiv.id = messageId;
+
+        const avatarContent = isUser ? 'U' : `<img src="static/HR-chat-icon.png" alt="Assistant" onerror="this.onerror=null; this.src='static/HR-chat-icon.jpg'">`;
+
+        let formattedContent = content;
+        if (!isUser && !content.includes('loading')) {
+            formattedContent = formatBotMessage(content);
+        }
+
+        const cleanTextForTTS = content
+            .replace(/<[^>]*>/g, '')
+            .replace(/&nbsp;/g, ' ')
+            .replace(/&quot;/g, '"')
+            .replace(/&amp;/g, '&')
+            .replace(/&lt;/g, '<')
+            .replace(/&gt;/g, '>')
+            .replace(/\*\*/g, '')
+            .replace(/\*/g, '')
+            .replace(/#{1,6}\s/g, '')
+            .replace(/\[([^\]]+)\]\([^\)]+\)/g, '$1')
+            .replace(/`{1,3}[^`]*`{1,3}/g, '')
+            .replace(/[-*_]{3,}/g, '')
+            .replace(/^\s*[-*+]\s+/gm, '• ')
+            .replace(/^\s*\d+\.\s+/gm, '')
+            .replace(/\n{3,}/g, '. ')
+            .replace(/\n/g, '. ')
+            .replace(/\.{2,}/g, '.')
+            .replace(/\s{2,}/g, ' ')
+            .trim();
+
+        const hasSpeaker = !isUser && !content.includes('loading') && !content.includes('Error') && cleanTextForTTS.length > 0;
+        const speakerBtn = hasSpeaker ? `<button class="speaker-btn" data-text="${cleanTextForTTS.replace(/"/g, '&quot;')}" onclick="speakText(this.getAttribute('data-text'), this)"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02z"/></svg></button>` : '';
+        
+        const ticketBtn = (showTicketButton && !ticketCreated) ? `
+            <button class="ticket-button" onclick="createQualityTicket(this)">
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
+                    <path d="M22 10V6a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2v4c1.1 0 2 .9 2 2s-.9 2-2 2v4a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-4c-1.1 0-2-.9-2-2s.9-2 2-2zm-9 7.5h-2v-2h2v2zm0-4.5h-2V7h2v6z"/>
+                </svg>
+                Raise Quality Inspection Ticket
+            </button>
+        ` : '';
+
+        messageDiv.innerHTML = `
+            <div class="message-avatar ${isUser ? 'user-avatar' : 'bot-avatar'}">
+                ${avatarContent}
+            </div>
+            <div class="message-content">
+                ${formattedContent}
+                ${speakerBtn}
+                ${ticketBtn}
+            </div>
+        `;
+
+        messagesDiv.appendChild(messageDiv);
+        messagesDiv.scrollTop = messagesDiv.scrollHeight;
+
+        if (autoSpeak && hasSpeaker && !isSpeaking) {
+            setTimeout(() => {
+                const btn = messageDiv.querySelector('.speaker-btn');
+                if (btn && !isSpeaking) {
+                    const textToSpeak = btn.getAttribute('data-text');
+                    startSpeech(textToSpeak, btn);
+                }
+            }, 400);
+        }
+
+        return messageId;
+    }
+    
+    function removeMessage(messageId) {
+        const msg = document.getElementById(messageId);
+        if (msg) msg.remove();
+    }
+
+    function formatBotMessage(text) {
+        text = text.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
+
+        if (currentFileType === 'image') {
+            const hazardWords = [
+                'hazard', 'hazards', 'risk', 'risks', 'danger', 'dangerous',
+                'broken', 'damaged', 'crack', 'cracked', 'defect', 'defective',
+                'unsafe', 'malfunction', 'failure', 'fault', 'faulty',
+                'issue', 'problem', 'warning', 'alert'
+            ];
+
+            hazardWords.forEach(word => {
+                const regex = new RegExp(`\\b(${word})\\b`, 'gi');
+                text = text.replace(regex, '<span class="hazard-word">$1</span>');
             });
         }
 
-        function closeFeedbackModal() {
-            const modal = document.getElementById('feedbackModal');
-            if (modal) {
-                modal.style.animation = 'fadeIn 0.3s ease reverse';
-                setTimeout(() => modal.remove(), 300);
-            }
-        }
+        let lines = text.split('\n');
+        let inList = false;
+        let formatted = [];
 
-        async function initSession() {
-            try {
-                const response = await fetch('/init_session', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json'
-                    },
-                    body: JSON.stringify({ session_id: sessionId })
-                });
+        for (let i = 0; i < lines.length; i++) {
+            let line = lines[i].trim();
 
-                const data = await response.json();
-
-                if (data.files && data.files.length > 0) {
-                    document.getElementById('kbStatus').textContent = `${data.files.length} file${data.files.length !== 1 ? 's' : ''} loaded. You can upload more files to expand the collection.`;
-                    updateFileList(data.files);
+            if (!line) {
+                if (inList) {
+                    formatted.push('</ul>');
+                    inList = false;
                 }
-            } catch (error) {
-                console.error('Init error:', error);
-            }
-        }
-
-        function toggleSidebar() {
-            const sidebar = document.getElementById('sidebar');
-            sidebar.classList.toggle('collapsed');
-        }
-
-        function toggleRecording() {
-            if (!recognition) {
-                alert('Speech recognition is not supported in your browser.');
-                return;
+                continue;
             }
 
-            if (isRecording) {
-                recognition.stop();
-            } else {
-                recognition.start();
-                document.getElementById('micBtn').classList.add('recording');
-                isRecording = true;
-            }
-            
-            resetInactivityTimer();
-        }
-
-        function stopRecording() {
-            isRecording = false;
-            document.getElementById('micBtn').classList.remove('recording');
-        }
-
-        function handleKeyPress(event) {
-            if (event.key === 'Enter' && !event.shiftKey) {
-                event.preventDefault();
-                sendMessage(false);
-            }
-            resetInactivityTimer();
-        }
-
-        async function sendMessage(isVoiceInput = false) {
-            const input = document.getElementById('messageInput');
-            const message = input.value.trim();
-
-            if (!message) return;
-
-            const lowerMessage = message.toLowerCase();
-
-            // Handle "Do you have any more questions?" response
-            if (waitingForMoreQuestionsResponse) {
-                addMessage(message, true);
-                input.value = '';
-                
-                if (lowerMessage === 'no' || lowerMessage.includes('no') || 
-                    lowerMessage === 'nope' || lowerMessage === 'nah' ||
-                    lowerMessage === 'not really' || lowerMessage === 'no thanks') {
-                    waitingForMoreQuestionsResponse = false;
-                    waitingForUploadResponse = true;
-                    addMessage('Would you like to upload a different file? (yes/no)', false, false, false);
-                    return;
-                } else if (lowerMessage === 'yes' || lowerMessage.includes('yes')) {
-                    waitingForMoreQuestionsResponse = false;
-                    addMessage('Please go ahead with your question.', false, false, false);
-                    resetInactivityTimer();
-                    return;
-                } else {
-                    // User asked another question
-                    waitingForMoreQuestionsResponse = false;
-                    resetInactivityTimer();
-                    // Continue to process the message normally below
+            if (line.match(/^\*\s+/) || line.match(/^-\s+/)) {
+                if (!inList) {
+                    formatted.push('<ul>');
+                    inList = true;
                 }
+                formatted.push(`<li>${line.substring(2)}</li>`);
             }
-            // Handle "Would you like to upload a different file?" response
-            else if (waitingForUploadResponse) {
-                addMessage(message, true);
-                input.value = '';
-                
-                if (lowerMessage === 'yes' || lowerMessage.includes('yes')) {
-                    waitingForUploadResponse = false;
-                    await clearChatAndPromptUpload();
-                    return;
-                } else if (lowerMessage === 'no' || lowerMessage.includes('no') ||
-                        lowerMessage === 'nope' || lowerMessage === 'nah' ||
-                        lowerMessage === 'not really' || lowerMessage === 'no thanks') {
-                    waitingForUploadResponse = false;
-                    // Clear the inactivity timer and mark session as ended
-                    if (inactivityTimer) {
-                        clearTimeout(inactivityTimer);
-                        inactivityTimer = null;
-                    }
-                    sessionEnded = true;
-                    const finalGreeting = 'Thank you for using Image/Audio Assistant! Have a great day!';
-                    addMessage(finalGreeting, false, false, false);
-                    setTimeout(() => showFeedbackModal(), 1500);
-                    return;
+            else if (line.match(/^\d+\.\s/)) {
+                if (inList) {
+                    formatted.push('</ul>');
+                    inList = false;
                 }
+                formatted.push(`<p><strong>${line}</strong></p>`);
             }
-            // Normal message handling
+            else if (line.startsWith('###')) {
+                if (inList) {
+                    formatted.push('</ul>');
+                    inList = false;
+                }
+                formatted.push(`<h3>${line.replace(/###/g, '').trim()}</h3>`);
+            }
+            else if (line.startsWith('##')) {
+                if (inList) {
+                    formatted.push('</ul>');
+                    inList = false;
+                }
+                formatted.push(`<h3>${line.replace(/##/g, '').trim()}</h3>`);
+            }
+            else if (line.startsWith('#')) {
+                if (inList) {
+                    formatted.push('</ul>');
+                    inList = false;
+                }
+                formatted.push(`<h4>${line.replace(/#/g, '').trim()}</h4>`);
+            }
             else {
-                resetInactivityTimer();
-
-                if (isGreeting(message)) {
-                    addMessage(message, true);
-                    input.value = '';
-                    const greetingResponse = 'Hello! How can I assist you with image or audio analysis today?';
-                    addMessage(greetingResponse, false, isVoiceInput, false);
-                    return;
+                if (inList) {
+                    formatted.push('</ul>');
+                    inList = false;
                 }
 
-                if (isGoodbye(message)) {
-                    addMessage(message, true);
-                    input.value = '';
-                    // Clear the inactivity timer and mark session as ended
-                    if (inactivityTimer) {
-                        clearTimeout(inactivityTimer);
-                        inactivityTimer = null;
-                    }
-                    sessionEnded = true;
-                    const goodbyeResponse = 'Thank you for using Image/Audio Assistant! We hope to see you again soon.';
-                    addMessage(goodbyeResponse, false, false, false);
-                    setTimeout(() => showFeedbackModal(), 1500);
-                    return;
-                }
+                line = line.replace(/\b(positive)\b/gi, '<span class="sentiment-positive">$1</span>');
+                line = line.replace(/\b(negative)\b/gi, '<span class="sentiment-negative">$1</span>');
+                line = line.replace(/\b(frustration|anxiety)\b/gi, '<span class="sentiment-negative">$1</span>');
+                line = line.replace(/\b(relief|gratitude|empathy|helpful)\b/gi, '<span class="sentiment-positive">$1</span>');
                 
-                // Add user message ONCE
-                addMessage(message, true);
-                input.value = '';
-            }
-
-            // Continue with API call for non-greeting/goodbye messages
-            const loadingId = addLoadingMessage();
-
-            try {
-                const response = await fetch('/chat', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json'
-                    },
-                    body: JSON.stringify({
-                        session_id: sessionId,
-                        message: message,
-                        is_voice_input: isVoiceInput,
-                        file_type: currentFileType
-                    })
-                });
-
-                const data = await response.json();
-                removeMessage(loadingId);
-
-                if (data.error) {
-                    addMessage(`Error: ${data.error}`, false, false, false);
-                } else {
-                    // Only show ticket button for image files
-                    const showTicket = data.show_ticket_button && currentFileType === 'image';
-                    addMessage(data.response, false, isVoiceInput, showTicket);
-                    
-                    // Handle session ended and feedback trigger (for consecutive "no" responses)
-                    if (data.session_ended && data.trigger_feedback) {
-                        // Clear the inactivity timer and mark session as ended
-                        if (inactivityTimer) {
-                            clearTimeout(inactivityTimer);
-                            inactivityTimer = null;
-                        }
-                        sessionEnded = true;
-                        // Show feedback modal after bot's goodbye message
-                        setTimeout(() => showFeedbackModal(), 1500);
-                    }
-                }
-            } catch (error) {
-                removeMessage(loadingId);
-                addMessage('Error: Failed to send message', false, false, false);
-                console.error('Send error:', error);
+                formatted.push(`<p>${line}</p>`);
             }
         }
-        
-        async function clearChatAndPromptUpload() {
-            try {
-                await fetch('/clear', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json'
-                    },
-                    body: JSON.stringify({ session_id: sessionId })
-                });
 
-                uploadedFiles = [];
-                currentFileType = null;
-                document.getElementById('fileList').innerHTML = '';
-                document.getElementById('kbStatus').textContent = 'No files found in collection. You can upload image or audio files to get started.';
+        if (inList) {
+            formatted.push('</ul>');
+        }
+
+        return formatted.join('');
+    }
+
+    function showToast(message, type = 'success') {
+        const toast = document.createElement('div');
+        toast.className = `toast ${type}`;
+
+        let iconSvg;
+        if (type === 'success') {
+            iconSvg = `<svg class="toast-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="#10b981"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>`;
+        } else if (type === 'warning') {
+            iconSvg = `<svg class="toast-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="#f39c12"><path d="M1 21h22L12 2 1 21zm12-3h-2v-2h2v2zm0-4h-2v-4h2v4z"/></svg>`;
+        } else {
+            iconSvg = `<svg class="toast-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="#ef4444"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-2h2v2zm0-4h-2V7h2v6z"/></svg>`;
+        }
+
+        toast.innerHTML = `
+            ${iconSvg}
+            <div class="toast-message">${message}</div>
+        `;
+
+        document.body.appendChild(toast);
+
+        setTimeout(() => {
+            toast.style.animation = 'slideInRight 0.4s ease-out reverse';
+            setTimeout(() => toast.remove(), 400);
+        }, 3000);
+    }
+    
+    async function createQualityTicket(button) {
+        if (ticketCreated) {
+            return;
+        }
+
+        try {
+            const response = await fetch('/api/create-ticket', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    session_id: sessionId
+                })
+            });
+
+            const data = await response.json();
+
+            if (data.success) {
+                showToast(`Quality Inspection Ticket ${data.ticket_number} created successfully!`, 'warning');
+                ticketCreated = true;
                 
-                document.getElementById('chatMessages').innerHTML = `
-                    <div class="welcome-message">
-                        <div class="welcome-avatar">
-                            <img src="static/HR-chat-icon.png" alt="Assistant" onerror="this.onerror=null; this.src='static/HR-chat-icon.jpg'">
-                        </div>
-                        <h2>Hello! I'm your Image/Audio Assistant.</h2>
-                        <p>I can analyze images and audio files. Upload a file to get started, and I'm ready to help with your questions.</p>
-                    </div>
-                `;
-
-                // Reset all states
-                ticketCreated = false;
-                sessionEnded = false; // Reset session ended flag
-                waitingForMoreQuestionsResponse = false;
-                waitingForUploadResponse = false;
-                
-                document.getElementById('fileInput').click();
-                showToast('Please upload a new file', 'success');
-                resetInactivityTimer();
-            } catch (error) {
-                console.error('Clear error:', error);
-                showToast('Failed to clear chat', 'error');
-            }
-        }
-
-
-        function addLoadingMessage() {
-            const messagesDiv = document.getElementById('chatMessages');
-            const welcomeMsg = messagesDiv.querySelector('.welcome-message');
-            if (welcomeMsg) welcomeMsg.remove();
-
-            const messageId = `msg_loading_${Date.now()}`;
-            const messageDiv = document.createElement('div');
-            messageDiv.className = 'message bot-message';
-            messageDiv.id = messageId;
-
-            messageDiv.innerHTML = `
-                <div class="message-avatar bot-avatar">
-                    <img src="static/HR-chat-icon.png" alt="Assistant" onerror="this.onerror=null; this.src='static/HR-chat-icon.jpg'">
-                </div>
-                <div class="message-content">
-                    <div class="loading"></div>
-                </div>
-            `;
-
-            messagesDiv.appendChild(messageDiv);
-            messagesDiv.scrollTop = messagesDiv.scrollHeight;
-
-            return messageId;
-        }
-
-        function addMessage(content, isUser, autoSpeak = false, showTicketButton = false) {
-            const messagesDiv = document.getElementById('chatMessages');
-            const welcomeMsg = messagesDiv.querySelector('.welcome-message');
-            if (welcomeMsg) welcomeMsg.remove();
-
-            const messageId = `msg_${Date.now()}`;
-            const messageDiv = document.createElement('div');
-            messageDiv.className = `message ${isUser ? 'user-message' : 'bot-message'}`;
-            messageDiv.id = messageId;
-
-            const avatarContent = isUser ? 'U' : `<img src="static/HR-chat-icon.png" alt="Assistant" onerror="this.onerror=null; this.src='static/HR-chat-icon.jpg'">`;
-
-            // Format content for DISPLAY (keep original formatting with HTML)
-            let formattedContent = content;
-            if (!isUser && !content.includes('loading')) {
-                formattedContent = formatBotMessage(content);
-            }
-
-            // Clean text for TTS ONLY (remove all formatting)
-            const cleanTextForTTS = content
-                .replace(/<[^>]*>/g, '') // Remove HTML tags
-                .replace(/&nbsp;/g, ' ') // Replace &nbsp;
-                .replace(/&quot;/g, '"') // Replace quotes
-                .replace(/&amp;/g, '&') // Replace ampersand
-                .replace(/&lt;/g, '<') // Replace less than
-                .replace(/&gt;/g, '>') // Replace greater than
-                .replace(/\*\*/g, '') // Remove bold markdown
-                .replace(/\*/g, '') // Remove italic markdown/asterisks
-                .replace(/#{1,6}\s/g, '') // Remove heading markdown
-                .replace(/\[([^\]]+)\]\([^\)]+\)/g, '$1') // Clean links - keep text only
-                .replace(/`{1,3}[^`]*`{1,3}/g, '') // Remove code blocks
-                .replace(/[-*_]{3,}/g, '') // Remove horizontal rules
-                .replace(/^\s*[-*+]\s+/gm, '• ') // Replace list markers with bullet
-                .replace(/^\s*\d+\.\s+/gm, '') // Remove numbered list markers
-                .replace(/\n{3,}/g, '. ') // Replace multiple newlines with period
-                .replace(/\n/g, '. ') // Replace single newlines with period for better speech
-                .replace(/\.{2,}/g, '.') // Replace multiple periods with single
-                .replace(/\s{2,}/g, ' ') // Replace multiple spaces with single
-                .trim();
-
-            const hasSpeaker = !isUser && !content.includes('loading') && !content.includes('Error') && cleanTextForTTS.length > 0;
-            const speakerBtn = hasSpeaker ? `<button class="speaker-btn" data-text="${cleanTextForTTS.replace(/"/g, '&quot;')}" onclick="speakText(this.getAttribute('data-text'), this)"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02z"/></svg></button>` : '';
-            
-            // Only show ticket button if showTicketButton is true (for images only) and ticket hasn't been created
-            const ticketBtn = (showTicketButton && !ticketCreated) ? `
-                <button class="ticket-button" onclick="createQualityTicket(this)">
-                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
-                        <path d="M22 10V6a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2v4c1.1 0 2 .9 2 2s-.9 2-2 2v4a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-4c-1.1 0-2-.9-2-2s.9-2 2-2zm-9 7.5h-2v-2h2v2zm0-4.5h-2V7h2v6z"/>
-                    </svg>
-                    Raise Quality Inspection Ticket
-                </button>
-            ` : '';
-
-            messageDiv.innerHTML = `
-                <div class="message-avatar ${isUser ? 'user-avatar' : 'bot-avatar'}">
-                    ${avatarContent}
-                </div>
-                <div class="message-content">
-                    ${formattedContent}
-                    ${speakerBtn}
-                    ${ticketBtn}
-                </div>
-            `;
-
-            messagesDiv.appendChild(messageDiv);
-            messagesDiv.scrollTop = messagesDiv.scrollHeight;
-
-            if (autoSpeak && hasSpeaker && !isSpeaking) {
-                setTimeout(() => {
-                    const btn = messageDiv.querySelector('.speaker-btn');
-                    if (btn && !isSpeaking) {
-                        const textToSpeak = btn.getAttribute('data-text');
-                        startSpeech(textToSpeak, btn);
-                    }
-                }, 400);
-            }
-
-            return messageId;
-        }
-        
-        function removeMessage(messageId) {
-            const msg = document.getElementById(messageId);
-            if (msg) msg.remove();
-        }
-
-        function formatBotMessage(text) {
-            // First, convert markdown bold to HTML strong
-            text = text.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
-
-            // Highlight hazard/risk words in RED (only for image analysis)
-            if (currentFileType === 'image') {
-                const hazardWords = [
-                    'hazard', 'hazards', 'risk', 'risks', 'danger', 'dangerous',
-                    'broken', 'damaged', 'crack', 'cracked', 'defect', 'defective',
-                    'unsafe', 'malfunction', 'failure', 'fault', 'faulty',
-                    'issue', 'problem', 'warning', 'alert'
-                ];
-
-                hazardWords.forEach(word => {
-                    const regex = new RegExp(`\\b(${word})\\b`, 'gi');
-                    text = text.replace(regex, '<span class="hazard-word">$1</span>');
+                const allTicketButtons = document.querySelectorAll('.ticket-button');
+                allTicketButtons.forEach(btn => {
+                    btn.style.display = 'none';
                 });
-            }
-
-            // Split text into lines for processing
-            let lines = text.split('\n');
-            let inList = false;
-            let formatted = [];
-
-            for (let i = 0; i < lines.length; i++) {
-                let line = lines[i].trim();
-
-                // Skip empty lines
-                if (!line) {
-                    if (inList) {
-                        formatted.push('</ul>');
-                        inList = false;
-                    }
-                    continue;
-                }
-
-                // Handle bullet list items
-                if (line.match(/^\*\s+/) || line.match(/^-\s+/)) {
-                    if (!inList) {
-                        formatted.push('<ul>');
-                        inList = true;
-                    }
-                    // Remove the bullet marker and add as list item
-                    formatted.push(`<li>${line.substring(2)}</li>`);
-                }
-                // Handle numbered list items
-                else if (line.match(/^\d+\.\s/)) {
-                    if (inList) {
-                        formatted.push('</ul>');
-                        inList = false;
-                    }
-                    formatted.push(`<p><strong>${line}</strong></p>`);
-                }
-                // Handle headers with ###
-                else if (line.startsWith('###')) {
-                    if (inList) {
-                        formatted.push('</ul>');
-                        inList = false;
-                    }
-                    formatted.push(`<h3>${line.replace(/###/g, '').trim()}</h3>`);
-                }
-                // Handle headers with ##
-                else if (line.startsWith('##')) {
-                    if (inList) {
-                        formatted.push('</ul>');
-                        inList = false;
-                    }
-                    formatted.push(`<h3>${line.replace(/##/g, '').trim()}</h3>`);
-                }
-                // Handle headers with #
-                else if (line.startsWith('#')) {
-                    if (inList) {
-                        formatted.push('</ul>');
-                        inList = false;
-                    }
-                    formatted.push(`<h4>${line.replace(/#/g, '').trim()}</h4>`);
-                }
-                // Regular paragraph
-                else {
-                    if (inList) {
-                        formatted.push('</ul>');
-                        inList = false;
-                    }
-
-                    // Apply sentiment highlighting
-                    line = line.replace(/\b(positive)\b/gi, '<span class="sentiment-positive">$1</span>');
-                    line = line.replace(/\b(negative)\b/gi, '<span class="sentiment-negative">$1</span>');
-                    line = line.replace(/\b(frustration|anxiety)\b/gi, '<span class="sentiment-negative">$1</span>');
-                    line = line.replace(/\b(relief|gratitude|empathy|helpful)\b/gi, '<span class="sentiment-positive">$1</span>');
-                    
-                    formatted.push(`<p>${line}</p>`);
-                }
-            }
-
-            // Close any open list
-            if (inList) {
-                formatted.push('</ul>');
-            }
-
-            return formatted.join('');
-        }
-
-        function showToast(message, type = 'success') {
-            const toast = document.createElement('div');
-            toast.className = `toast ${type}`;
-
-            let iconSvg;
-            if (type === 'success') {
-                iconSvg = `<svg class="toast-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="#10b981"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>`;
-            } else if (type === 'warning') {
-                iconSvg = `<svg class="toast-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="#f39c12"><path d="M1 21h22L12 2 1 21zm12-3h-2v-2h2v2zm0-4h-2v-4h2v4z"/></svg>`;
             } else {
-                iconSvg = `<svg class="toast-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="#ef4444"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-2h2v2zm0-4h-2V7h2v6z"/></svg>`;
-            }
-
-            toast.innerHTML = `
-                ${iconSvg}
-                <div class="toast-message">${message}</div>
-            `;
-
-            document.body.appendChild(toast);
-
-            setTimeout(() => {
-                toast.style.animation = 'slideInRight 0.4s ease-out reverse';
-                setTimeout(() => toast.remove(), 400);
-            }, 3000);
-        }
-        
-        async function createQualityTicket(button) {
-            if (ticketCreated) {
-                return;
-            }
-
-            try {
-                const response = await fetch('/api/create-ticket', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json'
-                    },
-                    body: JSON.stringify({
-                        session_id: sessionId
-                    })
-                });
-
-                const data = await response.json();
-
-                if (data.success) {
-                    showToast(`Quality Inspection Ticket ${data.ticket_number} created successfully!`, 'warning');
-                    ticketCreated = true;
-                    
-                    // Hide all ticket buttons in all messages
-                    const allTicketButtons = document.querySelectorAll('.ticket-button');
-                    allTicketButtons.forEach(btn => {
-                        btn.style.display = 'none';
-                    });
-                } else {
-                    showToast('Failed to create ticket', 'error');
-                }
-            } catch (error) {
-                console.error('Ticket creation error:', error);
                 showToast('Failed to create ticket', 'error');
             }
+        } catch (error) {
+            console.error('Ticket creation error:', error);
+            showToast('Failed to create ticket', 'error');
         }
+    }
 
-        // Image Modal Functions
-        function openImageModal(imageSrc) {
-            const modal = document.getElementById('imageModal');
-            const modalImg = document.getElementById('modalImage');
-            modal.classList.add('active');
-            modalImg.src = imageSrc;
-        }
+    function openImageModal(imageSrc) {
+        const modal = document.getElementById('imageModal');
+        const modalImg = document.getElementById('modalImage');
+        modal.classList.add('active');
+        modalImg.src = imageSrc;
+    }
 
-        function closeImageModal() {
-            const modal = document.getElementById('imageModal');
-            modal.classList.remove('active');
-        }
+    function closeImageModal() {
+        const modal = document.getElementById('imageModal');
+        modal.classList.remove('active');
+    }
 
-        document.getElementById('fileInput').addEventListener('change', async function(e) {
-            const files = e.target.files;
-            if (files.length === 0) return;
+    function updateFileList(files) {
+        const fileListDiv = document.getElementById('fileList');
+        fileListDiv.innerHTML = '';
 
-            // Only allow one file at a time
-            if (files.length > 1) {
-                showToast('Please upload only one file at a time', 'error');
-                e.target.value = '';
-                return;
+        files.forEach((fileData) => {
+            const fileItem = document.createElement('div');
+            fileItem.className = 'file-item';
+            fileItem.dataset.filename = fileData.filename;
+
+            const isImage = isImageFile(fileData.filename);
+            const isAudio = isAudioFile(fileData.filename);
+
+            let previewHTML = '';
+            
+            if (isImage) {
+                const imageSrc = `data:${fileData.mime_type};base64,${fileData.base64}`;
+                previewHTML = `<img class="file-preview" src="${imageSrc}" alt="${fileData.filename}" onclick="openImageModal('${imageSrc}')">`;
+            } else if (isAudio) {
+                const audioSrc = `data:${fileData.mime_type};base64,${fileData.base64}`;
+                previewHTML = `<audio class="audio-preview" controls><source src="${audioSrc}" type="${fileData.mime_type}">Your browser does not support the audio element.</audio>`;
             }
 
-            // Check if a file is already uploaded
-            if (uploadedFiles.length > 0) {
-                showToast('Please remove the existing file before uploading a new one', 'error');
-                e.target.value = '';
-                return;
-            }
+            const iconSvg = isImage 
+                ? `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M21 19V5c0-1.1-.9-2-2-2H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2zM8.5 13.5l2.5 3.01L14.5 12l4.5 6H5l3.5-4.5z"/></svg>`
+                : `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 3v9.28c-.47-.17-.97-.28-1.5-.28C8.01 12 6 14.01 6 16.5S8.01 21 10.5 21c2.31 0 4.2-1.75 4.45-4H15V6h4V3h-7z"/></svg>`;
 
-            const file = files[0];
-            const formData = new FormData();
-            formData.append('session_id', sessionId);
-            formData.append('files', file);
+            fileItem.innerHTML = `
+                <div class="file-header">
+                    ${iconSvg}
+                    <span class="file-name">${fileData.filename}</span>
+                    <button class="file-remove-btn" onclick="removeFile('${fileData.filename}')">Remove</button>
+                </div>
+                ${previewHTML}
+            `;
 
-            try {
-                showToast('Uploading file...', 'success');
-
-                const response = await fetch('/upload', {
-                    method: 'POST',
-                    body: formData
-                });
-
-                const data = await response.json();
-
-                if (data.success) {
-                    uploadedFiles = data.files;
-                    updateFileList(data.files);
-                    
-                    // IMPORTANT: Reset ticket states when new file is uploaded
-                    ticketCreated = false;
-                    
-                    // Remove all existing ticket buttons from the DOM
-                    const allTicketButtons = document.querySelectorAll('.ticket-button');
-                    allTicketButtons.forEach(btn => btn.remove());
-                    
-                    // Reset waiting states and stop inactivity timer temporarily
-                    waitingForMoreQuestionsResponse = false;
-                    waitingForUploadResponse = false;
-                    if (inactivityTimer) {
-                        clearTimeout(inactivityTimer);
-                        inactivityTimer = null;
-                    }
-                    
-                    // Determine and set file type
-                    if (isImageFile(file.name)) {
-                        currentFileType = 'image';
-                        document.getElementById('kbStatus').textContent = '1 image file uploaded. Ready for analysis.';
-                    } else if (isAudioFile(file.name)) {
-                        currentFileType = 'audio';
-                        document.getElementById('kbStatus').textContent = '1 audio file uploaded. Ready for analysis.';
-                    } else {
-                        currentFileType = null;
-                        document.getElementById('kbStatus').textContent = '1 file uploaded. Ready for analysis.';
-                    }
-                    
-                    showToast('File uploaded successfully', 'success');
-                    // DON'T call resetInactivityTimer() here - let user ask first question
-                } else {
-                    showToast(`Upload failed: ${data.error}`, 'error');
-                }
-            } catch (error) {
-                console.error('Upload error:', error);
-                showToast('Upload error', 'error');
-            }
-
-            e.target.value = '';
+            fileListDiv.appendChild(fileItem);
         });
+    }
+
+    function removeFile(filename) {
+        const fileItem = document.querySelector(`[data-filename="${filename}"]`);
+        if (fileItem) {
+            fileItem.remove();
+        }
+
+        uploadedFiles = uploadedFiles.filter(f => f.filename !== filename);
+        currentFileType = null;
         
-        function updateFileList(files) {
-            const fileListDiv = document.getElementById('fileList');
-            fileListDiv.innerHTML = '';
+        ticketCreated = false;
+        
+        const allTicketButtons = document.querySelectorAll('.ticket-button');
+        allTicketButtons.forEach(btn => btn.remove());
 
-            files.forEach((fileData) => {
-                const fileItem = document.createElement('div');
-                fileItem.className = 'file-item';
-                fileItem.dataset.filename = fileData.filename;
+        document.getElementById('kbStatus').textContent = 'No files found in collection. You can upload image or audio files to get started.';
 
-                const isImage = isImageFile(fileData.filename);
-                const isAudio = isAudioFile(fileData.filename);
+        showToast('File removed', 'success');
+        
+        // CRITICAL: Set flag to block timer until file is uploaded
+        awaitingFileUpload = true;
+        stopInactivityTimer();
+        console.log('File removed - timer blocked until new file is uploaded');
+    }
 
-                let previewHTML = '';
+    async function exportChat() {
+        try {
+            showToast('Generating PDF...', 'success');
+            
+            const response = await fetch('/export/pdf', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ session_id: sessionId })
+            });
+
+            const data = await response.json();
+            
+            if (data.success) {
+                const byteCharacters = atob(data.pdf_data);
+                const byteNumbers = new Array(byteCharacters.length);
+                for (let i = 0; i < byteCharacters.length; i++) {
+                    byteNumbers[i] = byteCharacters.charCodeAt(i);
+                }
+                const byteArray = new Uint8Array(byteNumbers);
+                const blob = new Blob([byteArray], { type: 'application/pdf' });
                 
-                if (isImage) {
-                    const imageSrc = `data:${fileData.mime_type};base64,${fileData.base64}`;
-                    previewHTML = `<img class="file-preview" src="${imageSrc}" alt="${fileData.filename}" onclick="openImageModal('${imageSrc}')">`;
-                } else if (isAudio) {
-                    const audioSrc = `data:${fileData.mime_type};base64,${fileData.base64}`;
-                    previewHTML = `<audio class="audio-preview" controls><source src="${audioSrc}" type="${fileData.mime_type}">Your browser does not support the audio element.</audio>`;
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = data.filename;
+                a.click();
+                
+                showToast('Chat exported as PDF successfully', 'success');
+            } else {
+                showToast('Export failed: ' + data.error, 'error');
+            }
+        } catch (error) {
+            console.error('Export error:', error);
+            showToast('Export failed', 'error');
+        }
+    }
+    
+    async function clearChat() {
+        if (!confirm('Are you sure you want to clear the chat history and remove all uploaded files?')) return;
+
+        try {
+            await fetch('/clear', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ session_id: sessionId })
+            });
+
+            uploadedFiles = [];
+            currentFileType = null;
+            document.getElementById('fileList').innerHTML = '';
+            document.getElementById('kbStatus').textContent = 'No files found in collection. You can upload image or audio files to get started.';
+
+            document.getElementById('chatMessages').innerHTML = `
+                <div class="welcome-message">
+                    <div class="welcome-avatar">
+                        <img src="static/HR-chat-icon.png" alt="Assistant" onerror="this.onerror=null; this.src='static/HR-chat-icon.jpg'">
+                    </div>
+                    <h2>Hello! I'm your Image/Audio Assistant.</h2>
+                    <p>I can analyze images and audio files. Upload a file to get started, and I'm ready to help with your questions.</p>
+                </div>
+            `;
+
+            ticketCreated = false;
+            sessionEnded = false;
+            waitingForMoreQuestionsResponse = false;
+            waitingForUploadResponse = false;
+            
+            stopInactivityTimer();
+
+            showToast('Chat and files cleared', 'success');
+        } catch (error) {
+            console.error('Clear error:', error);
+            showToast('Clear failed', 'error');
+        }
+    }
+
+    async function exportFeedback() {
+        if (!userHasFeedback) {
+            showToast('No feedback data available', 'error');
+            return;
+        }
+
+        try {
+            const response = await fetch('/export/feedback', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ session_id: sessionId })
+            });
+
+            const data = await response.json();
+
+            if (data.success) {
+                const blob = new Blob([data.csv_data], { type: 'text/csv' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = data.filename;
+                a.click();
+
+                showToast('Feedback exported', 'success');
+            } else {
+                showToast('No feedback data available', 'error');
+            }
+        } catch (error) {
+            console.error('Feedback export error:', error);
+            showToast('Export failed', 'error');
+        }
+    }
+
+    // Initialize when DOM is ready
+    function initializeApp() {
+        console.log('Initializing app...');
+        
+        const fileInput = document.getElementById('fileInput');
+        if (fileInput) {
+            fileInput.addEventListener('change', async function(e) {
+                const files = e.target.files;
+                
+                console.log('File input changed, files selected:', files.length);
+                
+                if (files.length === 0) {
+                    console.log('No files selected - user cancelled');
+                    return;
                 }
 
-                const iconSvg = isImage 
-                    ? `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M21 19V5c0-1.1-.9-2-2-2H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2zM8.5 13.5l2.5 3.01L14.5 12l4.5 6H5l3.5-4.5z"/></svg>`
-                    : `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 3v9.28c-.47-.17-.97-.28-1.5-.28C8.01 12 6 14.01 6 16.5S8.01 21 10.5 21c2.31 0 4.2-1.75 4.45-4H15V6h4V3h-7z"/></svg>`;
+                if (files.length > 1) {
+                    showToast('Please upload only one file at a time', 'error');
+                    e.target.value = '';
+                    return;
+                }
 
-                fileItem.innerHTML = `
-                    <div class="file-header">
-                        ${iconSvg}
-                        <span class="file-name">${fileData.filename}</span>
-                        <button class="file-remove-btn" onclick="removeFile('${fileData.filename}')">Remove</button>
-                    </div>
-                    ${previewHTML}
-                `;
+                if (uploadedFiles.length > 0) {
+                    showToast('Please remove the existing file before uploading a new one', 'error');
+                    e.target.value = '';
+                    return;
+                }
 
-                fileListDiv.appendChild(fileItem);
+                const file = files[0];
+                const formData = new FormData();
+                formData.append('session_id', sessionId);
+                formData.append('files', file);
+
+                try {
+                    console.log('Starting file upload...');
+                    showToast('Uploading file...', 'success');
+
+                    const response = await fetch('/upload', {
+                        method: 'POST',
+                        body: formData
+                    });
+
+                    const data = await response.json();
+
+                    if (data.success) {
+                        console.log('File uploaded successfully');
+                        uploadedFiles = data.files;
+                        updateFileList(data.files);
+                        
+                        ticketCreated = false;
+                        
+                        const allTicketButtons = document.querySelectorAll('.ticket-button');
+                        allTicketButtons.forEach(btn => btn.remove());
+                        
+                        waitingForMoreQuestionsResponse = false;
+                        waitingForUploadResponse = false;
+                        stopInactivityTimer();
+                        
+                        if (isImageFile(file.name)) {
+                            currentFileType = 'image';
+                            document.getElementById('kbStatus').textContent = '1 image file uploaded. Ready for analysis.';
+                        } else if (isAudioFile(file.name)) {
+                            currentFileType = 'audio';
+                            document.getElementById('kbStatus').textContent = '1 audio file uploaded. Ready for analysis.';
+                        } else {
+                            currentFileType = null;
+                            document.getElementById('kbStatus').textContent = '1 file uploaded. Ready for analysis.';
+                        }
+                        
+                        showToast('File uploaded successfully', 'success');
+                        
+                        // CRITICAL: Unblock timer after successful upload
+                        awaitingFileUpload = false;
+                        console.log('File uploaded - starting 7 second timer');
+                        startInactivityTimer();
+                        
+                    } else {
+                        showToast(`Upload failed: ${data.error}`, 'error');
+                    }
+                } catch (error) {
+                    console.error('Upload error:', error);
+                    showToast('Upload error', 'error');
+                }
+
+                e.target.value = '';
             });
         }
 
-        function removeFile(filename) {
-            const fileItem = document.querySelector(`[data-filename="${filename}"]`);
-            if (fileItem) {
-                fileItem.remove();
-            }
-
-            uploadedFiles = uploadedFiles.filter(f => f.filename !== filename);
-            currentFileType = null;
-            
-            // Reset ticket states when file is removed
-            ticketCreated = false;
-            
-            // Remove all existing ticket buttons from the DOM
-            const allTicketButtons = document.querySelectorAll('.ticket-button');
-            allTicketButtons.forEach(btn => btn.remove());
-
-            document.getElementById('kbStatus').textContent = 'No files found in collection. You can upload image or audio files to get started.';
-
-            showToast('File removed', 'success');
-        }
-
-        async function exportChat() {
-            try {
-                // Show loading toast
-                showToast('Generating PDF...', 'success');
-                
-                const response = await fetch('/export/pdf', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json'
-                    },
-                    body: JSON.stringify({ session_id: sessionId })
-                });
-
-                const data = await response.json();
-                
-                if (data.success) {
-                    // Convert base64 to blob and download
-                    const byteCharacters = atob(data.pdf_data);
-                    const byteNumbers = new Array(byteCharacters.length);
-                    for (let i = 0; i < byteCharacters.length; i++) {
-                        byteNumbers[i] = byteCharacters.charCodeAt(i);
-                    }
-                    const byteArray = new Uint8Array(byteNumbers);
-                    const blob = new Blob([byteArray], { type: 'application/pdf' });
-                    
-                    const url = URL.createObjectURL(blob);
-                    const a = document.createElement('a');
-                    a.href = url;
-                    a.download = data.filename;
-                    a.click();
-                    
-                    showToast('Chat exported as PDF successfully', 'success');
-                } else {
-                    showToast('Export failed: ' + data.error, 'error');
-                }
-            } catch (error) {
-                console.error('Export error:', error);
-                showToast('Export failed', 'error');
-            }
-        }
+        initTTS();
+        initSession();
         
-        async function clearChat() {
-            if (!confirm('Are you sure you want to clear the chat history and remove all uploaded files?')) return;
+        console.log('App initialized successfully');
+    }
 
-            try {
-                await fetch('/clear', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json'
-                    },
-                    body: JSON.stringify({ session_id: sessionId })
-                });
-
-                uploadedFiles = [];
-                currentFileType = null;
-                document.getElementById('fileList').innerHTML = '';
-                document.getElementById('kbStatus').textContent = 'No files found in collection. You can upload image or audio files to get started.';
-
-                document.getElementById('chatMessages').innerHTML = `
-                    <div class="welcome-message">
-                        <div class="welcome-avatar">
-                            <img src="static/HR-chat-icon.png" alt="Assistant" onerror="this.onerror=null; this.src='static/HR-chat-icon.jpg'">
-                        </div>
-                        <h2>Hello! I'm your Image/Audio Assistant.</h2>
-                        <p>I can analyze images and audio files. Upload a file to get started, and I'm ready to help with your questions.</p>
-                    </div>
-                `;
-
-                // Reset all ticket-related states
-                ticketCreated = false;
-                sessionEnded = false; // Reset session ended flag
-                waitingForMoreQuestionsResponse = false;
-                waitingForUploadResponse = false;
-                
-                // Restart inactivity timer
-                resetInactivityTimer();
-
-                showToast('Chat and files cleared', 'success');
-            } catch (error) {
-                console.error('Clear error:', error);
-                showToast('Clear failed', 'error');
-            }
-        }
-
-        async function exportFeedback() {
-            if (!userHasFeedback) {
-                showToast('No feedback data available', 'error');
-                return;
-            }
-
-            try {
-                const response = await fetch('/export/feedback', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json'
-                    },
-                    body: JSON.stringify({ session_id: sessionId })
-                });
-
-                const data = await response.json();
-
-                if (data.success) {
-                    const blob = new Blob([data.csv_data], { type: 'text/csv' });
-                    const url = URL.createObjectURL(blob);
-                    const a = document.createElement('a');
-                    a.href = url;
-                    a.download = data.filename;
-                    a.click();
-
-                    showToast('Feedback exported', 'success');
-                } else {
-                    showToast('No feedback data available', 'error');
-                }
-            } catch (error) {
-                console.error('Feedback export error:', error);
-                showToast('Export failed', 'error');
-            }
-        }
-
-        // Event listeners for user activity
-        document.addEventListener('click', resetInactivityTimer);
-        document.addEventListener('keypress', resetInactivityTimer);
-        document.addEventListener('mousemove', resetInactivityTimer);
-
-        window.addEventListener('load', () => {
-            initTTS();
-            initSession();
-            resetInactivityTimer();
-        });
-    </script>
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', initializeApp);
+    } else {
+        initializeApp();
+    }
+</script>
 </body>
 </html>
