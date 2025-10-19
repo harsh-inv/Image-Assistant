@@ -144,7 +144,8 @@ def init_session():
             'feedback_submitted': False,
             'ticket_button_clicked': False,
             'last_analysis': None,
-            'awaiting_followup': False
+            'awaiting_followup': False,
+            'consecutive_no_count': 0  # NEW: Track consecutive "no" responses
         }
     
     return jsonify({
@@ -274,7 +275,8 @@ def chat():
             'feedback_submitted': False,
             'ticket_button_clicked': False,
             'last_analysis': None,
-            'awaiting_followup': False
+            'awaiting_followup': False,
+            'consecutive_no_count': 0
         }
     
     # Update last interaction time
@@ -287,6 +289,49 @@ def chat():
             'content': message,
             'timestamp': datetime.now().isoformat()
         })
+        
+        # Normalize message
+        normalized_message = message.lower().strip().replace("'", "").replace(",", "").replace(".", "")
+        
+        # Check if this is a negative/dismissive response
+        negative_responses = ['no', 'nope', 'nah', 'not needed', 'no need', 'no thanks', 
+                             'not really', 'im good', "i'm good", 'all good', 'thats all', 
+                             "that's all", 'nothing else', 'nothing more']
+        
+        is_negative = any(neg in normalized_message for neg in negative_responses)
+        
+        # Track consecutive "no" responses
+        if is_negative:
+            sessions[session_id]['consecutive_no_count'] = sessions[session_id].get('consecutive_no_count', 0) + 1
+        else:
+            sessions[session_id]['consecutive_no_count'] = 0
+        
+        # If user has said "no" 2 or more times consecutively, end the session
+        if sessions[session_id]['consecutive_no_count'] >= 2:
+            bot_response = "Thank you for using Image/Audio Assistant! Have a great day!"
+            
+            sessions[session_id]['messages'].append({
+                'role': 'assistant',
+                'content': bot_response,
+                'timestamp': datetime.now().isoformat()
+            })
+            
+            # Reset consecutive count
+            sessions[session_id]['consecutive_no_count'] = 0
+            
+            return jsonify({
+                'success': True,
+                'response': bot_response,
+                'is_voice_input': is_voice_input,
+                'show_ticket_button': False,
+                'ticket_created': sessions[session_id]['ticket_created'],
+                'feedback_submitted': sessions[session_id]['feedback_submitted'],
+                'ticket_button_clicked': sessions[session_id]['ticket_button_clicked'],
+                'video': None,
+                'video_name': None,
+                'session_ended': True,
+                'trigger_feedback': True
+            })
         
         # Generate response
         if model:
@@ -309,28 +354,76 @@ def chat():
             # Get system prompt based on file type
             system_prompt = get_system_prompt(file_type)
             
-            # Check if this is an acknowledgment or negative response that doesn't need analysis
+            # Check if this is an acknowledgment
             acknowledgments = [
                 'ok', 'okay', 'okey', 'oke', 'k',
                 'nice', 'good', 'great', 'excellent', 'awesome', 'perfect', 'cool', 'fine',
                 'thanks', 'thank you', 'thankyou', 'thx', 'ty',
                 'alright', 'got it', 'understood', 'i see', 'i understand',
-                'no', 'nope', 'nah', 'not really', 'no thanks', 'im good', "i'm good",
                 'yes', 'yeah', 'yep', 'yup', 'sure', 'of course'
             ]
             
-            # Normalize the message for checking
-            normalized_message = message.lower().strip().replace("'", "").replace(",", "").replace(".", "")
+            # Add negative responses to acknowledgments for brief handling
+            acknowledgments.extend(negative_responses)
             
-            # Check if message is ONLY an acknowledgment (not a question or request)
             is_acknowledgment = (
                 normalized_message in acknowledgments or
                 (len(normalized_message.split()) <= 3 and any(ack in normalized_message for ack in acknowledgments))
             ) and not any(question_word in normalized_message for question_word in [
-                'what', 'why', 'how', 'when', 'where', 'who', 'which', 'can', 'could', 'would', 'should', 'is', 'are', 'does', 'do', 'analyze', 'explain', 'tell', 'show', 'describe'
+                'what', 'why', 'how', 'when', 'where', 'who', 'which', 'can', 'could', 
+                'would', 'should', 'is', 'are', 'does', 'do', 'analyze', 'explain', 
+                'tell', 'show', 'describe'
             ])
             
-            # Build the context
+            # Check relevance for non-acknowledgment questions when files are uploaded
+            if not is_acknowledgment and sessions[session_id]['files'] and file_type:
+                # First, do a quick relevance check with the AI
+                relevance_check_prompt = f"""You are analyzing whether a user's question is relevant to {file_type} analysis.
+
+The user has uploaded a {file_type} file and is asking: "{message}"
+
+Respond with ONLY one word:
+- "RELEVANT" if the question is about analyzing, understanding, or discussing the uploaded {file_type}
+- "IRRELEVANT" if the question is completely unrelated to the {file_type} (like asking about weather, time, unrelated topics, etc.)
+
+Your response (one word only):"""
+
+                relevance_response = model.generate_content([
+                    {"role": "user", "parts": [{"text": relevance_check_prompt}]}
+                ])
+                
+                relevance_result = relevance_response.text.strip().upper()
+                
+                # If question is irrelevant, return a polite redirect with improved messaging
+                if "IRRELEVANT" in relevance_result:
+                    # More natural, friendly, and professional response
+                    if file_type == 'image':
+                        bot_response = "I'm happy to help you analyze the image you've uploaded. It seems your question isn't directly related to the image. Could you please ask a question about the image, or upload a new file if you'd like me to analyze something different?"
+                    elif file_type == 'audio':
+                        bot_response = "I'm happy to help you analyze the audio you've uploaded. It seems your question isn't directly related to the audio. Could you please ask a question about the audio, or upload a new file if you'd like me to analyze something different?"
+                    else:
+                        bot_response = "I'm happy to help you with your file analysis. It seems your question isn't directly related to the uploaded file. Could you please ask a question about the file, or upload a new one if you'd like me to analyze something different?"
+                    
+                    sessions[session_id]['messages'].append({
+                        'role': 'assistant',
+                        'content': bot_response,
+                        'timestamp': datetime.now().isoformat()
+                    })
+                    
+                    return jsonify({
+                        'success': True,
+                        'response': bot_response,
+                        'is_voice_input': is_voice_input,
+                        'show_ticket_button': False,
+                        'ticket_created': sessions[session_id]['ticket_created'],
+                        'feedback_submitted': sessions[session_id]['feedback_submitted'],
+                        'ticket_button_clicked': sessions[session_id]['ticket_button_clicked'],
+                        'video': None,
+                        'video_name': None,
+                        'session_ended': False
+                    })
+            
+            # Build context
             if is_acknowledgment and sessions[session_id]['last_analysis']:
                 # For acknowledgments, give a brief response without re-analyzing
                 context_message = f"""{system_prompt}
@@ -341,7 +434,7 @@ This is just an acknowledgment, NOT a request for new analysis.
 
 Respond VERY BRIEFLY with ONE of these options:
 - If they said "ok/nice/good/thanks": "You're welcome! Feel free to ask if you need anything else or upload a new file for analysis."
-- If they said "no" after being asked if they want more details: "Understood. Feel free to upload a new file when you're ready, or let me know if you need anything else."
+- If they said "no/no need/not needed": "Understood. Let me know if you need anything else."
 - If they said "yes": "What specific aspect would you like me to elaborate on?"
 
 Do NOT repeat the analysis. Keep response to 1-2 sentences maximum."""
@@ -484,7 +577,7 @@ Do NOT repeat the analysis. Keep response to 1-2 sentences maximum."""
             'error': str(e),
             'response': 'An error occurred while processing your request.'
         })
-
+    
 @app.route('/api/create-ticket', methods=['POST'])
 def create_ticket():
     data = request.json
