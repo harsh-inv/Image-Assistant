@@ -2,6 +2,7 @@ import os
 import base64
 import time
 import json
+import random
 from datetime import datetime
 from flask import Flask, render_template, request, jsonify, session
 from flask_cors import CORS
@@ -145,7 +146,7 @@ def init_session():
             'ticket_button_clicked': False,
             'last_analysis': None,
             'awaiting_followup': False,
-            'consecutive_no_count': 0  # NEW: Track consecutive "no" responses
+            'consecutive_no_count': 0
         }
     
     return jsonify({
@@ -172,7 +173,8 @@ def upload_file():
             'feedback_submitted': False,
             'ticket_button_clicked': False,
             'last_analysis': None,
-            'awaiting_followup': False
+            'awaiting_followup': False,
+            'consecutive_no_count': 0
         }
     
     # Clear existing files (only one file at a time)
@@ -192,6 +194,7 @@ def upload_file():
     sessions[session_id]['ticket_created'] = False
     sessions[session_id]['last_analysis'] = None
     sessions[session_id]['awaiting_followup'] = False
+    sessions[session_id]['consecutive_no_count'] = 0
     
     uploaded_files = []
     files = request.files.getlist('files')
@@ -382,10 +385,13 @@ def chat():
 
 The user has uploaded a {file_type} file and is asking: "{message}"
 
+Previous context: The user is specifically asking about THIS uploaded {file_type}, not previous analyses.
+
 Respond with ONLY one word:
 - "RELEVANT" if the question is about analyzing, understanding, or discussing the uploaded {file_type}
 - "IRRELEVANT" if the question is completely unrelated to the {file_type} (like asking about weather, time, unrelated topics, etc.)
 
+Request ID: {random.randint(1000, 9999)}
 Your response (one word only):"""
 
                 relevance_response = model.generate_content([
@@ -398,11 +404,11 @@ Your response (one word only):"""
                 if "IRRELEVANT" in relevance_result:
                     # More natural, friendly, and professional response
                     if file_type == 'image':
-                        bot_response = "I'm happy to help you analyze the image you've uploaded. It seems your question isn't directly related to the image. Could you please ask a question about the image, or upload a new file if you'd like me to analyze something different?"
+                        bot_response = "I can help you analyze the image you've uploaded. It seems your question isn't directly related to the image. Could you please ask a question about the image, or upload a new file if you'd like me to analyze something different?"
                     elif file_type == 'audio':
-                        bot_response = "I'm happy to help you analyze the audio you've uploaded. It seems your question isn't directly related to the audio. Could you please ask a question about the audio, or upload a new file if you'd like me to analyze something different?"
+                        bot_response = "I can help you analyze the audio you've uploaded. It seems your question isn't directly related to the audio. Could you please ask a question about the audio, or upload a new file if you'd like me to analyze something different?"
                     else:
-                        bot_response = "I'm happy to help you with your file analysis. It seems your question isn't directly related to the uploaded file. Could you please ask a question about the file, or upload a new one if you'd like me to analyze something different?"
+                        bot_response = "I can help you with your file analysis. It seems your question isn't directly related to the uploaded file. Could you please ask a question about the file, or upload a new one if you'd like me to analyze something different?"
                     
                     sessions[session_id]['messages'].append({
                         'role': 'assistant',
@@ -531,21 +537,51 @@ Do NOT repeat the analysis. Keep response to 1-2 sentences maximum."""
                 sessions[session_id]['awaiting_followup'] = False
             
             # Check if response contains hazard/risk/broken keywords
+            # Check if response contains hazard/risk/broken keywords
             hazard_keywords = [
                 'hazard', 'hazards', 'risk', 'risks', 'danger', 'dangerous',
                 'broken', 'damaged', 'crack', 'cracked', 'defect', 'defective',
                 'unsafe', 'malfunction', 'failure', 'fault', 'faulty',
                 'concern', 'issue', 'problem', 'warning', 'alert'
             ]
-            
-            # Show ticket button if: has image file AND not already clicked AND response contains hazard keywords
+
+            # Exclude dashboard/chart/visualization contexts - ENHANCED
+            dashboard_keywords = [
+                'dashboard', 'chart', 'graph', 'visualization', 'metric', 'metrics',
+                'kpi', 'analytics', 'report', 'data', 'statistics', 'performance',
+                'trend', 'bar chart', 'pie chart', 'line graph', 'scatter plot',
+                'heatmap', 'infographic', 'scorecard', 'diagram', 'table',
+                'financial', 'budget', 'revenue', 'sales', 'quarterly', 'year-over-year',
+                'yoy', 'ytd', 'delta', 'variance', 'actuals', 'forecast',
+                'business', 'customer', 'product', 'region', 'growth',
+                'development', 'quarter', 'q1', 'q2', 'q3', 'q4'
+            ]
+
+            # Additional check: look for financial/business terms in the response
+            financial_indicators = [
+                'budget', 'quarter', 'yoy', 'ytd', 'revenue', 'sales',
+                'financial', 'growth %', 'actuals', 'forecast', 'variance',
+                'delta to budget', 'year-over-year', 'year-to-date'
+            ]
+
+            # Check if it's a dashboard/chart context
+            is_dashboard_context = any(keyword in bot_response.lower() for keyword in dashboard_keywords)
+
+            # Additional check for financial context
+            is_financial_context = any(indicator in bot_response.lower() for indicator in financial_indicators)
+
+            # Only show ticket button if hazard keywords present AND not in dashboard/financial context
+            has_hazard_keywords = any(keyword in bot_response.lower() for keyword in hazard_keywords)
+
+            # Show ticket button if: has image file AND not already clicked AND response contains hazard keywords AND not dashboard/financial context
             show_ticket_button = (
                 has_image_file and 
                 (not sessions[session_id]['ticket_button_clicked']) and 
-                any(keyword in bot_response.lower() for keyword in hazard_keywords) and
+                has_hazard_keywords and
+                not is_dashboard_context and
+                not is_financial_context and
                 not is_acknowledgment
             )
-            
             # Add bot message to session
             sessions[session_id]['messages'].append({
                 'role': 'assistant',
@@ -744,6 +780,7 @@ def clear_chat():
         sessions[session_id]['last_interaction'] = time.time()
         sessions[session_id]['last_analysis'] = None
         sessions[session_id]['awaiting_followup'] = False
+        sessions[session_id]['consecutive_no_count'] = 0
         
         return jsonify({'success': True})
 
@@ -793,8 +830,8 @@ def check_idle():
         last_interaction = sessions[session_id]['last_interaction']
         idle_time = current_time - last_interaction
         
-        # Check if 10 seconds have passed
-        if idle_time >= 10:
+        # Check if 7 seconds have passed
+        if idle_time >= 7:
             return jsonify({
                 'is_idle': True,
                 'idle_time': idle_time
