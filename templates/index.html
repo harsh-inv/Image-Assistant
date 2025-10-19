@@ -1001,13 +1001,12 @@
             <div class="chat-messages" id="chatMessages">
                 <div class="welcome-message">
                     <div class="welcome-avatar">
-                        <img src="static/HR-chat-icon.jpg" alt="Assistant" onerror="this.onerror=null; this.src='static/HR-chat-icon.jpg'">
+                        <img src="static/HR-chat-icon.jpg" alt="Assistant" onerror="this.onerror=null; this.src='/static/HR-chat-icon.png'">
                     </div>
                     <h2>Hello! I'm your Image/Audio Assistant.</h2>
                     <p>I can analyze images and audio files. Upload a file to get started, and I'm ready to help with your questions.</p>
                 </div>
             </div>
-
             <!-- Input Area -->
             <div class="input-area">
                 <div class="input-container">
@@ -1039,6 +1038,7 @@
         let waitingForUploadResponse = false;
         let currentFileType = null; // Track whether current file is image or audio
         let sessionEnded = false;
+        
         // Initialize speech recognition
         if ('webkitSpeechRecognition' in window) {
             recognition = new webkitSpeechRecognition();
@@ -1086,8 +1086,9 @@
                 return;
             }
             
-            inactivityTimer = setTimeout(handleInactivity, 5000); // 5 seconds
+            inactivityTimer = setTimeout(handleInactivity, 7000); // 7 seconds
         }
+        
         function handleInactivity() {
             const messagesDiv = document.getElementById('chatMessages');
             const hasMessages = messagesDiv.querySelectorAll('.message').length > 0;
@@ -1602,6 +1603,7 @@
                 console.error('Send error:', error);
             }
         }
+        
         async function clearChatAndPromptUpload() {
             try {
                 await fetch('/clear', {
@@ -1747,6 +1749,7 @@
 
             return messageId;
         }
+        
         function removeMessage(messageId) {
             const msg = document.getElementById(messageId);
             if (msg) msg.remove();
@@ -1973,6 +1976,14 @@
                     const allTicketButtons = document.querySelectorAll('.ticket-button');
                     allTicketButtons.forEach(btn => btn.remove());
                     
+                    // Reset waiting states and stop inactivity timer temporarily
+                    waitingForMoreQuestionsResponse = false;
+                    waitingForUploadResponse = false;
+                    if (inactivityTimer) {
+                        clearTimeout(inactivityTimer);
+                        inactivityTimer = null;
+                    }
+                    
                     // Determine and set file type
                     if (isImageFile(file.name)) {
                         currentFileType = 'image';
@@ -1986,7 +1997,7 @@
                     }
                     
                     showToast('File uploaded successfully', 'success');
-                    resetInactivityTimer();
+                    // DON'T call resetInactivityTimer() here - let user ask first question
                 } else {
                     showToast(`Upload failed: ${data.error}`, 'error');
                 }
@@ -1997,6 +2008,7 @@
 
             e.target.value = '';
         });
+        
         function updateFileList(files) {
             const fileListDiv = document.getElementById('fileList');
             fileListDiv.innerHTML = '';
@@ -2097,6 +2109,7 @@
                 showToast('Export failed', 'error');
             }
         }
+        
         async function clearChat() {
             if (!confirm('Are you sure you want to clear the chat history and remove all uploaded files?')) return;
 
