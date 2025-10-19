@@ -161,7 +161,6 @@ def init_session():
 @app.route('/upload', methods=['POST'])
 def upload_file():
     session_id = request.form.get('session_id')
-    
     if session_id not in sessions:
         sessions[session_id] = {
             'messages': [],
@@ -209,55 +208,58 @@ def upload_file():
         # Read file and encode as base64 for preview
         with open(filepath, 'rb') as f:
             file_data = f.read()
-            base64_data = base64.b64encode(file_data).decode('utf-8')
+        base64_data = base64.b64encode(file_data).decode('utf-8')
         
         # Determine MIME type for images
         if filename.lower().endswith('.png'):
-            mime_type = 'image/png'
+            mimetype = 'image/png'
         elif filename.lower().endswith(('.jpg', '.jpeg')):
-            mime_type = 'image/jpeg'
+            mimetype = 'image/jpeg'
         elif filename.lower().endswith('.gif'):
-            mime_type = 'image/gif'
+            mimetype = 'image/gif'
         elif filename.lower().endswith('.bmp'):
-            mime_type = 'image/bmp'
+            mimetype = 'image/bmp'
         elif filename.lower().endswith('.webp'):
-            mime_type = 'image/webp'
+            mimetype = 'image/webp'
         # Audio file MIME types
         elif filename.lower().endswith('.wav'):
-            mime_type = 'audio/wav'
+            mimetype = 'audio/wav'
         elif filename.lower().endswith('.mp3'):
-            mime_type = 'audio/mp3'
+            mimetype = 'audio/mp3'
         elif filename.lower().endswith('.aiff'):
-            mime_type = 'audio/aiff'
+            mimetype = 'audio/aiff'
         elif filename.lower().endswith('.aac'):
-            mime_type = 'audio/aac'
+            mimetype = 'audio/aac'
         elif filename.lower().endswith('.ogg'):
-            mime_type = 'audio/ogg'
+            mimetype = 'audio/ogg'
         elif filename.lower().endswith('.flac'):
-            mime_type = 'audio/flac'
+            mimetype = 'audio/flac'
         else:
-            mime_type = 'application/octet-stream'
+            mimetype = 'application/octet-stream'
         
         sessions[session_id]['files'].append({
             'filename': filename,
             'base64': base64_data,
-            'mime_type': mime_type
+            'mimetype': mimetype
         })
         
         uploaded_files.append({
             'filename': filename,
             'base64': base64_data,
-            'mime_type': mime_type
+            'mimetype': mimetype
         })
     
-    # Update last interaction time
-    sessions[session_id]['last_interaction'] = time.time()
+    # Update last interaction time and store upload completion time
+    upload_time = time.time()
+    sessions[session_id]['last_interaction'] = upload_time
+    sessions[session_id]['upload_completed_time'] = upload_time  # NEW: Store upload time
     
     return jsonify({
         'success': True,
         'files': uploaded_files,
         'ticket_button_clicked': sessions[session_id]['ticket_button_clicked'],
-        'ticket_created': sessions[session_id]['ticket_created']
+        'ticket_created': sessions[session_id]['ticket_created'],
+        'upload_completed_time': upload_time  # NEW: Send to frontend
     })
 
 @app.route('/chat', methods=['POST'])
@@ -354,8 +356,97 @@ def chat():
                     file_type = 'audio'
                     break
             
-            # Get system prompt based on file type
-            system_prompt = get_system_prompt(file_type)
+            # UNIFIED INTELLIGENT SYSTEM PROMPT - adapts to any image type
+            if file_type == 'image':
+                system_prompt = """You are a professional Image Analysis Assistant that intelligently adapts to any type of image.
+
+CRITICAL ANALYSIS RULES:
+
+1. **First, examine the image** to understand what it actually shows
+2. **Adapt your analysis format** based on the image content
+3. **Never state what the image is NOT** - just analyze what it IS
+4. **Be specific with numbers, measurements, and details**
+
+---
+
+IF IMAGE SHOWS: Business Dashboard, Charts, Data Visualizations, Analytics Reports, KPI Displays
+THEN PROVIDE:
+
+**Overview**: Brief description of what this dashboard/visualization shows
+
+**Key Metrics Analysis**: 
+- Identify each metric with its actual value
+- Explain what each number/percentage represents
+- Note any standout figures
+
+**Performance Insights**:
+- Areas of strong performance
+- Areas of concern or underperformance
+- Budget variances (over/under)
+- Growth trends (Year-over-Year, Quarter-over-Quarter)
+
+**Comparative Analysis**:
+- Regional/Product/Customer comparisons
+- Top and bottom performers
+- Segment-specific insights
+
+**Business Interpretation**: Explain in simple, plain language what the data means
+
+**Key Takeaways**: List 3-5 most important insights
+
+---
+
+IF IMAGE SHOWS: Physical Objects, Equipment, Machinery, Electrical Components, Buildings, Infrastructure, or Defects
+THEN PROVIDE:
+
+**Overall Assessment**: What the image shows and general condition
+
+**Key Observations**:
+- Notable features, components, or concerns
+- Visible defects, damage, or irregularities
+- Material condition and state
+
+**Quality/Safety Assessment**:
+- **Defects Identified**: Type, location, severity, potential causes
+- **Hazards Present**: Fire risk, electrical issues, structural problems, safety concerns
+- **Risk Level**: Assessment of danger or risk
+- Material degradation, corrosion, wear, or failure signs
+
+**Potential Hazards** (if any):
+- Safety concerns with specific severity
+- Fire, electrical, structural, or operational risks
+- Immediate dangers
+
+**Recommendations**:
+- Immediate actions required
+- Safety precautions needed
+- Maintenance or repairs suggested
+- Whether quality inspection ticket should be raised
+- Further inspection areas
+
+**CRITICAL TERMS TO USE WHEN APPLICABLE**: hazard, risk, danger, damaged, broken, defect, unsafe, malfunction, failure, crack, corrosion, wear, fault, faulty
+
+---
+
+RESPONSE LENGTH RULES:
+- Acknowledgments (ok, thanks, nice, good, etc.): 1 sentence maximum
+- Follow-up questions about previous analysis: 2-3 sentences
+- New analysis requests: Full structured response as shown above
+- **Never repeat previous analysis** unless explicitly asked with words like "again", "repeat", "show me"
+
+CONVERSATION CONTEXT:
+- If user just acknowledged (said "ok", "thanks", etc.), respond briefly: "You're welcome! Let me know if you need anything else."
+- If user said "no" after being asked if they want more info: "Understood. Feel free to ask if you need anything else."
+- Only provide detailed analysis for NEW questions or when user uploads NEW files
+
+Current user question: {message}
+
+Analyze the image and provide the appropriate detailed response."""
+
+            elif file_type == 'audio':
+                system_prompt = get_system_prompt(file_type)
+            else:
+                system_prompt = get_system_prompt(None)
             
             # Check if this is an acknowledgment
             acknowledgments = [
@@ -380,12 +471,10 @@ def chat():
             
             # Check relevance for non-acknowledgment questions when files are uploaded
             if not is_acknowledgment and sessions[session_id]['files'] and file_type:
-                # First, do a quick relevance check with the AI
+                # Quick relevance check with the AI
                 relevance_check_prompt = f"""You are analyzing whether a user's question is relevant to {file_type} analysis.
 
 The user has uploaded a {file_type} file and is asking: "{message}"
-
-Previous context: The user is specifically asking about THIS uploaded {file_type}, not previous analyses.
 
 Respond with ONLY one word:
 - "RELEVANT" if the question is about analyzing, understanding, or discussing the uploaded {file_type}
@@ -400,9 +489,8 @@ Your response (one word only):"""
                 
                 relevance_result = relevance_response.text.strip().upper()
                 
-                # If question is irrelevant, return a polite redirect with improved messaging
+                # If question is irrelevant, return a polite redirect
                 if "IRRELEVANT" in relevance_result:
-                    # More natural, friendly, and professional response
                     if file_type == 'image':
                         bot_response = "I can help you analyze the image you've uploaded. It seems your question isn't directly related to the image. Could you please ask a question about the image, or upload a new file if you'd like me to analyze something different?"
                     elif file_type == 'audio':
@@ -432,9 +520,7 @@ Your response (one word only):"""
             # Build context
             if is_acknowledgment and sessions[session_id]['last_analysis']:
                 # For acknowledgments, give a brief response without re-analyzing
-                context_message = f"""{system_prompt}
-
-The user previously received a detailed analysis. User just responded with: "{message}"
+                context_message = f"""The user previously received a detailed analysis. User just responded with: "{message}"
 
 This is just an acknowledgment, NOT a request for new analysis.
 
@@ -536,8 +622,7 @@ Do NOT repeat the analysis. Keep response to 1-2 sentences maximum."""
             else:
                 sessions[session_id]['awaiting_followup'] = False
             
-            # Check if response contains hazard/risk/broken keywords
-            # Check if response contains hazard/risk/broken keywords
+            # Check if response contains hazard/risk/broken keywords for DEFECTS
             hazard_keywords = [
                 'hazard', 'hazards', 'risk', 'risks', 'danger', 'dangerous',
                 'broken', 'damaged', 'crack', 'cracked', 'defect', 'defective',
@@ -545,8 +630,8 @@ Do NOT repeat the analysis. Keep response to 1-2 sentences maximum."""
                 'concern', 'issue', 'problem', 'warning', 'alert'
             ]
 
-            # Exclude dashboard/chart/visualization contexts - ENHANCED
-            dashboard_keywords = [
+            # Dashboard/business context keywords - EXPANDED
+            dashboard_context_keywords = [
                 'dashboard', 'chart', 'graph', 'visualization', 'metric', 'metrics',
                 'kpi', 'analytics', 'report', 'data', 'statistics', 'performance',
                 'trend', 'bar chart', 'pie chart', 'line graph', 'scatter plot',
@@ -554,26 +639,38 @@ Do NOT repeat the analysis. Keep response to 1-2 sentences maximum."""
                 'financial', 'budget', 'revenue', 'sales', 'quarterly', 'year-over-year',
                 'yoy', 'ytd', 'delta', 'variance', 'actuals', 'forecast',
                 'business', 'customer', 'product', 'region', 'growth',
-                'development', 'quarter', 'q1', 'q2', 'q3', 'q4'
+                'development', 'quarter', 'q1', 'q2', 'q3', 'q4',
+                'overview', 'key metrics', 'performance insights', 'comparative analysis',
+                'business interpretation', 'key takeaways'
             ]
 
-            # Additional check: look for financial/business terms in the response
+            # Financial/business indicators in response
             financial_indicators = [
                 'budget', 'quarter', 'yoy', 'ytd', 'revenue', 'sales',
                 'financial', 'growth %', 'actuals', 'forecast', 'variance',
-                'delta to budget', 'year-over-year', 'year-to-date'
+                'delta to budget', 'year-over-year', 'year-to-date',
+                'powerstick co', 'zato service', 'energy supply', 'healthyfood',
+                'municipality', 'oblasecurity', 'health & hygiene', 'sweet gmbh',
+                'paper & towel', 'coolcar ag', 'cs mee', 'cs north america',
+                'cs emea', 'cs apj', 'cs latin america', 'cs g.china',
+                'epm', 'bi & predictive', 'customer', 'top 10', 'acv ranges'
             ]
 
-            # Check if it's a dashboard/chart context
-            is_dashboard_context = any(keyword in bot_response.lower() for keyword in dashboard_keywords)
+            # Check if it's a dashboard/business context
+            is_dashboard_context = any(keyword in bot_response.lower() for keyword in dashboard_context_keywords)
 
             # Additional check for financial context
             is_financial_context = any(indicator in bot_response.lower() for indicator in financial_indicators)
 
-            # Only show ticket button if hazard keywords present AND not in dashboard/financial context
+            # Check if hazard keywords are present
             has_hazard_keywords = any(keyword in bot_response.lower() for keyword in hazard_keywords)
 
-            # Show ticket button if: has image file AND not already clicked AND response contains hazard keywords AND not dashboard/financial context
+            # Show ticket button ONLY if:
+            # 1. Has image file
+            # 2. Ticket button not already clicked
+            # 3. Response contains hazard/defect keywords
+            # 4. NOT in dashboard/financial context
+            # 5. NOT an acknowledgment
             show_ticket_button = (
                 has_image_file and 
                 (not sessions[session_id]['ticket_button_clicked']) and 
@@ -582,6 +679,7 @@ Do NOT repeat the analysis. Keep response to 1-2 sentences maximum."""
                 not is_financial_context and
                 not is_acknowledgment
             )
+            
             # Add bot message to session
             sessions[session_id]['messages'].append({
                 'role': 'assistant',
@@ -828,10 +926,24 @@ def check_idle():
     if session_id in sessions:
         current_time = time.time()
         last_interaction = sessions[session_id]['last_interaction']
+        upload_completed_time = sessions[session_id].get('upload_completed_time')
+        
+        # Calculate idle time
         idle_time = current_time - last_interaction
         
-        # Check if 7 seconds have passed
-        if idle_time >= 7:
+        # If file was recently uploaded, use 10 second threshold
+        # Otherwise use 7 second threshold
+        if upload_completed_time and (current_time - upload_completed_time) < 15:
+            # Within 15 seconds of upload, use 10 second threshold
+            idle_threshold = 10
+        else:
+            # Normal idle threshold
+            idle_threshold = 7
+            # Clear the upload_completed_time after threshold period
+            if upload_completed_time:
+                sessions[session_id]['upload_completed_time'] = None
+        
+        if idle_time >= idle_threshold:
             return jsonify({
                 'is_idle': True,
                 'idle_time': idle_time
