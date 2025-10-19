@@ -1086,7 +1086,7 @@
                 return;
             }
             
-            inactivityTimer = setTimeout(handleInactivity, 10000); // 10 seconds
+            inactivityTimer = setTimeout(handleInactivity, 5000); // 5 seconds
         }
         function handleInactivity() {
             const messagesDiv = document.getElementById('chatMessages');
@@ -1481,13 +1481,16 @@
                 addMessage(message, true);
                 input.value = '';
                 
-                if (lowerMessage === 'no' || lowerMessage.includes('no')) {
+                if (lowerMessage === 'no' || lowerMessage.includes('no') || 
+                    lowerMessage === 'nope' || lowerMessage === 'nah' ||
+                    lowerMessage === 'not really' || lowerMessage === 'no thanks') {
                     waitingForMoreQuestionsResponse = false;
                     waitingForUploadResponse = true;
                     addMessage('Would you like to upload a different file? (yes/no)', false, false, false);
                     return;
                 } else if (lowerMessage === 'yes' || lowerMessage.includes('yes')) {
                     waitingForMoreQuestionsResponse = false;
+                    addMessage('Please go ahead with your question.', false, false, false);
                     resetInactivityTimer();
                     return;
                 } else {
@@ -1506,7 +1509,9 @@
                     waitingForUploadResponse = false;
                     await clearChatAndPromptUpload();
                     return;
-                } else if (lowerMessage === 'no' || lowerMessage.includes('no')) {
+                } else if (lowerMessage === 'no' || lowerMessage.includes('no') ||
+                        lowerMessage === 'nope' || lowerMessage === 'nah' ||
+                        lowerMessage === 'not really' || lowerMessage === 'no thanks') {
                     waitingForUploadResponse = false;
                     // Clear the inactivity timer and mark session as ended
                     if (inactivityTimer) {
@@ -1546,6 +1551,7 @@
                     setTimeout(() => showFeedbackModal(), 1500);
                     return;
                 }
+                
                 // Add user message ONCE
                 addMessage(message, true);
                 input.value = '';
@@ -1577,6 +1583,18 @@
                     // Only show ticket button for image files
                     const showTicket = data.show_ticket_button && currentFileType === 'image';
                     addMessage(data.response, false, isVoiceInput, showTicket);
+                    
+                    // Handle session ended and feedback trigger (for consecutive "no" responses)
+                    if (data.session_ended && data.trigger_feedback) {
+                        // Clear the inactivity timer and mark session as ended
+                        if (inactivityTimer) {
+                            clearTimeout(inactivityTimer);
+                            inactivityTimer = null;
+                        }
+                        sessionEnded = true;
+                        // Show feedback modal after bot's goodbye message
+                        setTimeout(() => showFeedbackModal(), 1500);
+                    }
                 }
             } catch (error) {
                 removeMessage(loadingId);
